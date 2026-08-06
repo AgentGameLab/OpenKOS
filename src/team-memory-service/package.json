@@ -1,0 +1,21 @@
+{
+  "name": "team-memory-service",
+  "version": "0.1.0",
+  "description": "OpenKOS self-hosted team-memory service (HTTP MCP)",
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs --transport=http --port=3000",
+    "start:dev": "node index.mjs --transport=http --port=3000 --bind=127.0.0.1",
+    "import": "node import-from-md.mjs",
+    "import:dry": "node import-from-md.mjs --dry-run",
+    "backfill-embeddings": "node backfill-embeddings.mjs",
+    "init-schema": "psql -f sql/001-init.sql",
+    "health": "curl -s http://127.0.0.1:3000/health"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "pg": "^8.11.3",
+    "zod": "^3.22.4"
+  }
+}

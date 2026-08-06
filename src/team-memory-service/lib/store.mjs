@@ -1,0 +1,284 @@
+
+import { query } from './db.mjs'
+import { createHash } from 'node:crypto'
+import { AuthorizationError } from './authz.mjs'
+
+export async function assertSupersedesWithinWriteScopes(supersedes, authorizedWriteScopes) {
+  const ids = (Array.isArray(supersedes) ? supersedes : [])
+    .map(Number)
+    .filter(n => Number.isFinite(n))
+  if (ids.length === 0) return
+  if (ids.length > 50) throw new AuthorizationError('supersedes must contain at most 50 ids')
+  const scopes = Array.isArray(authorizedWriteScopes) ? authorizedWriteScopes : []
+  if (scopes.length === 0) throw new AuthorizationError('无写入 scope，不能 supersede')
+  const r = await query(
+    'SELECT id, scope FROM team_memory.memories WHERE id = ANY($1)',
+    [ids]
+  )
+  const outside = r.rows.filter(row => !scopes.includes(row.scope))
+  if (outside.length > 0) {
+    throw new AuthorizationError(
+      `无权 supersede 以下 scope 的记忆：${[...new Set(outside.map(r2 => r2.scope))].join(', ')}`
+    )
+  }
+}
+
+const ALLOWED_TYPES = ['snapshot', 'pointer', 'rule', 'playbook', 'decision', 'feedback', 'user', 'general', 'incident', 'reference', 'correction']
+const ALLOWED_STATUS = ['active', 'superseded', 'planned', 'draft', 'archived']
+const ALLOWED_LEVELS = ['concrete_trace', 'semi_abstract', 'meta_knowledge']
+
+async function embedContent(text) {
+  if (!text) return null
+  const key = process.env.EMBEDDING_API_KEY
+  if (!key) {
+    console.error('[store] ⚠️⚠️ EMBEDDING_API_KEY MISSING — 写 NULL 向量，recall 将降级。这是 prod-env-被剥 复发根因，立即检查 ECS PM2 env！ metric:embed_key_missing=1')
+    return null
+  }
+  const base = process.env.EMBEDDING_API_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+  const model = process.env.EMBEDDING_MODEL || 'text-embedding-v3'
+  const dim = parseInt(process.env.EMBEDDING_DIMENSION || '1024', 10)
+  const RETRYABLE = new Set([429, 500, 502, 503, 504])
+  const MAX_ATTEMPTS = 3
+  let lastStatus = null
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const r = await fetch(`${base}/embeddings`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, input: text.length > 4000 ? text.slice(0, 4000) : text, dimensions: dim, encoding_format: 'float' }),
+      })
+      if (!r.ok) {
+        lastStatus = r.status
+        if (RETRYABLE.has(r.status) && attempt < MAX_ATTEMPTS) {
+          const backoffMs = 300 * 2 ** (attempt - 1) // 300ms, 600ms
+          console.error(`[store] embed failed HTTP ${r.status}, retry ${attempt}/${MAX_ATTEMPTS} in ${backoffMs}ms`)
+          await new Promise(res => setTimeout(res, backoffMs))
+          continue
+        }
+        console.error('[store] embed failed HTTP', r.status, attempt >= MAX_ATTEMPTS ? '(exhausted retries — writing NULL vector, needs backfill)' : '')
+        return null
+      }
+      const j = await r.json()
+      const v = j.data?.[0]?.embedding
+      return (Array.isArray(v) && v.length === dim) ? v : null
+    } catch (e) {
+      lastStatus = 'network_error'
+      if (attempt < MAX_ATTEMPTS) {
+        const backoffMs = 300 * 2 ** (attempt - 1)
+        console.error(`[store] embed error: ${e.message}, retry ${attempt}/${MAX_ATTEMPTS} in ${backoffMs}ms`)
+        await new Promise(res => setTimeout(res, backoffMs))
+        continue
+      }
+      console.error('[store] embed error (exhausted retries):', e.message)
+      return null
+    }
+  }
+  return null
+}
+
+export async function storeMemory(mem) {
+  if (!mem.content || mem.content.length === 0) {
+    throw new Error('content is required')
+  }
+
+  const rawSupersedes = Array.isArray(mem.supersedes) ? mem.supersedes : []
+  if (rawSupersedes.length > 50) {
+    throw new Error('supersedes must contain at most 50 ids')
+  }
+  if (
+    rawSupersedes.length > 0 &&
+    (!Array.isArray(mem.authorizedWriteScopes) ||
+      mem.authorizedWriteScopes.length === 0 ||
+      !mem.authorizedWriteScopes.every(scope => typeof scope === 'string' && scope.length > 0))
+  ) {
+    throw new Error('authorizedWriteScopes must be a non-empty array of strings when supersedes is provided')
+  }
+  const authorizedWriteScopes = mem.authorizedWriteScopes || []
+  const supersedes = rawSupersedes.map(Number).filter(n => Number.isFinite(n))
+
+  const content = mem.content
+  const hash = createHash('sha256').update(content).digest('hex').slice(0, 32)
+
+  const existing = await query('SELECT id FROM team_memory.memories WHERE hash = $1', [hash])
+  if (existing.rows.length) {
+    const keptId = Number(existing.rows[0].id)
+    const dupSupersedes = supersedes
+      .filter(n => Number.isFinite(n) && n !== keptId)
+    let superseded = 0
+    if (dupSupersedes.length) {
+      const pool = (await import('./db.mjs')).getPool()
+      const c = await pool.connect()
+      try {
+        await c.query('BEGIN')
+        const targets = await c.query(
+          'SELECT id, scope FROM team_memory.memories WHERE id = ANY($1) FOR UPDATE',
+          [dupSupersedes]
+        )
+        if (targets.rows.some(row => !authorizedWriteScopes.includes(row.scope))) {
+          throw new Error('supersedes contains a memory outside authorized write scopes')
+        }
+        const res = await c.query(
+          `UPDATE team_memory.memories
+              SET t_invalid = now(), status = 'superseded'
+            WHERE id = ANY($1) AND scope = ANY($2) AND t_invalid IS NULL`,
+          [dupSupersedes, authorizedWriteScopes]
+        )
+        superseded = res.rowCount ?? 0
+        await c.query('COMMIT')
+      } catch (e) {
+        await c.query('ROLLBACK').catch(() => {})
+        throw e
+      } finally {
+        c.release()
+      }
+    }
+    return { id: keptId, hash, status: 'duplicate', superseded }
+  }
+
+  const type = ALLOWED_TYPES.includes(mem.type) ? mem.type : 'rule'
+  const memory_level = ALLOWED_LEVELS.includes(mem.memory_level) ? mem.memory_level : 'meta_knowledge'
+  const importance = Math.max(1, Math.min(10, parseInt(mem.importance, 10) || 5))
+  const scope = mem.scope || 'all-agents'
+
+  const requires_review = type === 'decision'
+
+  let contentVector = null
+  if (Array.isArray(mem.content_vector) && mem.content_vector.length === 1024) {
+    contentVector = '[' + mem.content_vector.join(',') + ']'
+  } else {
+    const vec = await embedContent([mem.name, content].filter(Boolean).join('\n'))
+    if (vec) contentVector = '[' + vec.join(',') + ']'
+  }
+
+  const client = (await import('./db.mjs')).getPool().connect ? null : null  // 用 query helper 的话 transaction 麻烦
+  const pool = (await import('./db.mjs')).getPool()
+  const c = await pool.connect()
+
+  let result
+  try {
+    await c.query('BEGIN')
+    const ins = await c.query(
+      `INSERT INTO team_memory.memories (
+        hash, name, description, content, summary,
+        type, topic, scope, status,
+        maturity, requires_review,
+        confidence, importance, memory_level, category,
+        author_agent_id, supersedes,
+        tags, metadata, content_vector,
+        last_corrected_at,
+        expires_at,
+        source_file
+      ) VALUES (
+        $1, $2, $3, $4, $5,
+        $6, $7, $8, 'active',
+        'draft', $9,
+        0.4, $10, $11, $12,
+        $13, $14,
+        $15, $16, $17::vector,
+        $18,
+        $19::timestamptz,
+        $20
+      )
+      RETURNING id`,
+      [
+        hash,
+        mem.name || null,
+        mem.description || null,
+        content,
+        mem.summary || null,
+        type,
+        mem.topic || null,
+        scope,
+        requires_review,
+        importance,
+        memory_level,
+        mem.category || type,
+        mem.author_agent_id || null,
+        supersedes,
+        Array.isArray(mem.tags) ? mem.tags : [],
+        JSON.stringify(mem.metadata || {}),
+        contentVector,
+        mem.last_corrected_at || null,
+        mem.expires_at || null,  // 2026-05-14 ADR-032 P1 lifecycle
+        mem.source_file || (mem.metadata && mem.metadata.kos_file) || null,
+      ]
+    )
+    const newId = Number(ins.rows[0].id)
+
+    if (supersedes.length > 0) {
+      const targets = await c.query(
+        'SELECT id, scope FROM team_memory.memories WHERE id = ANY($1) FOR UPDATE',
+        [supersedes]
+      )
+      if (targets.rows.some(row => !authorizedWriteScopes.includes(row.scope))) {
+        throw new Error('supersedes contains a memory outside authorized write scopes')
+      }
+      await c.query(
+        `UPDATE team_memory.memories
+         SET t_invalid = now(), status = 'superseded'
+         WHERE id = ANY($1) AND scope = ANY($2) AND t_invalid IS NULL`,
+        [supersedes, authorizedWriteScopes]
+      )
+    }
+
+    await c.query('COMMIT')
+    result = { id: newId, hash, status: 'inserted' }
+  } catch (e) {
+    await c.query('ROLLBACK').catch(() => {})
+    throw e
+  } finally {
+    c.release()
+  }
+
+  return result
+}
+
+export async function promoteMaturity({ memoryId, toMaturity, approvedBy, approvedByName, reason, authorizedWriteScopes }) {
+  if (!['verified', 'proven'].includes(toMaturity)) {
+    throw new Error('toMaturity must be verified or proven')
+  }
+  if (
+    !Array.isArray(authorizedWriteScopes) ||
+    authorizedWriteScopes.length === 0 ||
+    !authorizedWriteScopes.every(scope => typeof scope === 'string' && scope.length > 0)
+  ) {
+    throw new Error('authorizedWriteScopes must be a non-empty array of strings')
+  }
+
+  const pool = (await import('./db.mjs')).getPool()
+  const c = await pool.connect()
+  try {
+    await c.query('BEGIN')
+    const cur = await c.query(
+      'SELECT maturity, scope FROM team_memory.memories WHERE id = $1 FOR UPDATE',
+      [memoryId]
+    )
+    if (!cur.rows.length) throw new Error('memory not found')
+    if (!authorizedWriteScopes.includes(cur.rows[0].scope)) {
+      throw new Error('memory scope is outside authorized write scopes')
+    }
+    const fromMaturity = cur.rows[0].maturity
+
+    const order = { draft: 0, verified: 1, proven: 2 }
+    if (order[toMaturity] <= order[fromMaturity]) {
+      throw new Error(`cannot promote ${fromMaturity} → ${toMaturity}`)
+    }
+
+    await c.query(
+      'UPDATE team_memory.memories SET maturity = $1 WHERE id = $2 AND scope = ANY($3)',
+      [toMaturity, memoryId, authorizedWriteScopes]
+    )
+    await c.query(
+      `INSERT INTO team_memory.promotion_log (memory_id, from_maturity, to_maturity, approved_by, approved_by_name, reason)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [memoryId, fromMaturity, toMaturity, approvedBy || null, approvedByName || null, reason || null]
+    )
+    await c.query('COMMIT')
+    return { id: memoryId, from: fromMaturity, to: toMaturity }
+  } catch (e) {
+    await c.query('ROLLBACK').catch(() => {})
+    throw e
+  } finally {
+    c.release()
+  }
+}

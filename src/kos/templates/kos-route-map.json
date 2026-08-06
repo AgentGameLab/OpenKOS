@@ -1,0 +1,27 @@
+{
+  "_doc": "KOS 写入路由默认模板（bootstrap template）。kos-init 把本文件拷贝到 <数据根>/team-memory/pointers/kos-route-map.json——拷贝后那份才是运行时单一源。代码不得在运行时读本模板兜底（会复活路由双源；kos-remember 对清单缺失保持 fail-closed throw）。",
+  "_maintenance": "初始化后在数据根的清单上按需增删 types；新建 team-memory/ 子目录必须在数据根清单里登记，否则 kos-remember --verify-routes 报错。本模板只在 kos-init 时被读取。",
+
+  "types": {
+    "rule": { "scope": "team", "path": "team-memory/rules", "desc": "铁律 / 协议 / 强制约束" },
+    "playbook": { "scope": "team", "path": "team-memory/playbooks", "desc": "流程 / 打法 / 操作指引" },
+    "decision": { "scope": "team", "path": "team-memory/decisions", "desc": "决策卡 / ADR（slug 以 adr- 开头时改落 docs/architecture/）" },
+    "incident": { "scope": "team", "path": "team-memory/decisions", "desc": "事故复盘，与 decision 同目录" },
+    "finding": { "scope": "team", "path": "team-memory/findings", "desc": "调研发现 / 实证结论" },
+    "pointer": { "scope": "team", "path": "team-memory/pointers", "desc": "注册表 / 单一源指针" },
+    "spec": { "scope": "team", "path": "team-memory/specs", "desc": "规格说明 / 接口契约" },
+    "snapshot": { "scope": "team", "path": "team-memory/snapshots", "desc": "时点快照（进度 / 状态存档）" },
+    "article": { "scope": "team", "path": "team-memory/articles", "desc": "成文长稿 / 对外文章存档" },
+    "member": { "scope": "team", "path": "team-memory/members", "desc": "成员履历档案" },
+    "reference": { "scope": "personal", "path": null, "team_path": "team-memory/references", "desc": "参考资料。默认落个人记忆目录；显式 scope=team 时落 team-memory/references/" },
+    "feedback": { "scope": "personal", "path": null, "desc": "个人层：用户反馈 / 纠偏。无团队路径，显式 scope=team 会报错" },
+    "correction": { "scope": "personal", "path": null, "desc": "个人层：自我纠错记录。无团队路径，显式 scope=team 会报错" }
+  },
+
+  "legacy_dirs": {},
+
+  "non_memory_dirs": {
+    "_archive": "归档只读区，不接受新写入",
+    "_drafts": "--draft 模式落点，不直接寻址"
+  }
+}

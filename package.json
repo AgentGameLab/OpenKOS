@@ -1,0 +1,55 @@
+{
+  "name": "openkos",
+  "version": "0.1.0",
+  "description": "A team memory engine for AI agents — write, route, graph, recall, inject. Files in, knowledge graph out, context-aware recall over MCP. Local-first, graceful degradation, zero required services.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentGameLab/OpenKOS.git"
+  },
+  "homepage": "https://github.com/AgentGameLab/OpenKOS#readme",
+  "bugs": {
+    "url": "https://github.com/AgentGameLab/OpenKOS/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "memory",
+    "knowledge-graph",
+    "recall",
+    "mcp",
+    "rag",
+    "team-memory",
+    "llm",
+    "claude",
+    "cursor"
+  ],
+  "bin": {
+    "kos-recall": "src/kos/kos-recall.mjs",
+    "kos-remember": "src/kos/kos-remember.mjs",
+    "kos-mcp": "src/kos/mcp-server.mjs"
+  },
+  "exports": {
+    "./recall": "./src/kos/kos-recall.mjs",
+    "./remember": "./src/kos/kos-remember.mjs",
+    "./dedup": "./src/kos/kos-dedup.mjs",
+    "./roster": "./src/kos/roster.mjs",
+    "./kg/generate": "./src/kg/knowledge-graph-gen.mjs",
+    "./kg/cross-query": "./src/kg/cross-query.mjs",
+    "./mcp-server": "./src/kos/mcp-server.mjs"
+  },
+  "scripts": {
+    "recall": "node src/kos/kos-recall.mjs",
+    "remember": "node src/kos/kos-remember.mjs",
+    "kg:gen": "node src/kg/knowledge-graph-gen.mjs",
+    "mcp": "node src/kos/mcp-server.mjs",
+    "test": "node --test \"src/kos/test/*.test.mjs\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.22.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

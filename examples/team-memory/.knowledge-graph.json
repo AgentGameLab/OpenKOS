@@ -1,0 +1,872 @@
+{
+  "generated_at": "2026-07-17T04:59:56.489Z",
+  "meta": {
+    "gitCommitHash": null,
+    "built_at": "2026-07-17T04:59:56.488Z"
+  },
+  "nodes": [
+    {
+      "id": "team-memory/decisions/adr-001-file-based-memory.md",
+      "canonical_path": "team-memory/decisions/adr-001-file-based-memory.md",
+      "name": "adr-001-file-based-memory",
+      "type": "decision",
+      "declared_type": "decision",
+      "maturity": "verified",
+      "status": null,
+      "topic": "architecture",
+      "last_verified": "2026-02-10",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 0.7,
+      "t_valid": null,
+      "t_invalid": null
+    },
+    {
+      "id": "team-memory/decisions/adr-002-keyword-recall.md",
+      "canonical_path": "team-memory/decisions/adr-002-keyword-recall.md",
+      "name": "adr-002-keyword-recall",
+      "type": "decision",
+      "declared_type": "decision",
+      "maturity": "superseded",
+      "status": null,
+      "topic": "recall-strategy",
+      "last_verified": "2026-04-15",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 0.5,
+      "t_valid": null,
+      "t_invalid": null
+    },
+    {
+      "id": "team-memory/decisions/adr-003-hybrid-recall.md",
+      "canonical_path": "team-memory/decisions/adr-003-hybrid-recall.md",
+      "name": "adr-003-hybrid-recall",
+      "type": "decision",
+      "declared_type": "decision",
+      "maturity": "verified",
+      "status": null,
+      "topic": "recall-strategy",
+      "last_verified": "2026-06-20",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 0.7,
+      "t_valid": null,
+      "t_invalid": null
+    },
+    {
+      "id": "team-memory/decisions/adr-004-dedup-threshold.md",
+      "canonical_path": "team-memory/decisions/adr-004-dedup-threshold.md",
+      "name": "adr-004-dedup-threshold",
+      "type": "decision",
+      "declared_type": "decision",
+      "maturity": "draft",
+      "status": null,
+      "topic": "recall-quality",
+      "last_verified": "2026-07-05",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 0.4,
+      "t_valid": null,
+      "t_invalid": null
+    },
+    {
+      "id": "team-memory/decisions/recall-latency-benchmark.md",
+      "canonical_path": "team-memory/decisions/recall-latency-benchmark.md",
+      "name": "recall-latency-benchmark",
+      "type": "decision",
+      "declared_type": "decision",
+      "maturity": "verified",
+      "status": null,
+      "topic": "performance",
+      "last_verified": "2026-09-12",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 0.7,
+      "t_valid": null,
+      "t_invalid": null
+    },
+    {
+      "id": "team-memory/decisions/why-agents-hallucinate-team-facts.md",
+      "canonical_path": "team-memory/decisions/why-agents-hallucinate-team-facts.md",
+      "name": "why-agents-hallucinate-team-facts",
+      "type": "decision",
+      "declared_type": "decision",
+      "maturity": "verified",
+      "status": null,
+      "topic": "agent-reliability",
+      "last_verified": "2026-03-05",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 0.7,
+      "t_valid": null,
+      "t_invalid": null
+    },
+    {
+      "id": "team-memory/playbooks/dispatching-subagents.md",
+      "canonical_path": "team-memory/playbooks/dispatching-subagents.md",
+      "name": "dispatching-subagents",
+      "type": "playbook",
+      "declared_type": "playbook",
+      "maturity": "draft",
+      "status": null,
+      "topic": "agent-orchestration",
+      "last_verified": "2026-08-05",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 0.4,
+      "t_valid": null,
+      "t_invalid": null
+    },
+    {
+      "id": "team-memory/playbooks/incident-response.md",
+      "canonical_path": "team-memory/playbooks/incident-response.md",
+      "name": "incident-response",
+      "type": "playbook",
+      "declared_type": "playbook",
+      "maturity": "verified",
+      "status": null,
+      "topic": "incident-management",
+      "last_verified": "2026-09-18",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 0.7,
+      "t_valid": null,
+      "t_invalid": null
+    },
+    {
+      "id": "team-memory/playbooks/onboarding-new-agent.md",
+      "canonical_path": "team-memory/playbooks/onboarding-new-agent.md",
+      "name": "onboarding-new-agent",
+      "type": "playbook",
+      "declared_type": "playbook",
+      "maturity": "verified",
+      "status": null,
+      "topic": "agent-management",
+      "last_verified": "2026-06-15",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 0.7,
+      "t_valid": null,
+      "t_invalid": null
+    },
+    {
+      "id": "team-memory/playbooks/weekly-memory-review.md",
+      "canonical_path": "team-memory/playbooks/weekly-memory-review.md",
+      "name": "weekly-memory-review",
+      "type": "playbook",
+      "declared_type": "playbook",
+      "maturity": "verified",
+      "status": null,
+      "topic": "memory-maintenance",
+      "last_verified": "2026-09-25",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 0.7,
+      "t_valid": null,
+      "t_invalid": null
+    },
+    {
+      "id": "team-memory/rules/agent-output-needs-evidence.md",
+      "canonical_path": "team-memory/rules/agent-output-needs-evidence.md",
+      "name": "agent-output-needs-evidence",
+      "type": "rule",
+      "declared_type": "rule",
+      "maturity": "verified",
+      "status": null,
+      "topic": "agent-communication",
+      "last_verified": "2026-02-01",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 0.7,
+      "t_valid": null,
+      "t_invalid": null
+    },
+    {
+      "id": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "canonical_path": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "name": "every-rule-needs-falsifiable-contract",
+      "type": "rule",
+      "declared_type": "rule",
+      "maturity": "proven",
+      "status": null,
+      "topic": "meta-process",
+      "last_verified": "2026-09-01",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 1,
+      "t_valid": null,
+      "t_invalid": null
+    },
+    {
+      "id": "team-memory/rules/no-direct-main-push.md",
+      "canonical_path": "team-memory/rules/no-direct-main-push.md",
+      "name": "no-direct-main-push",
+      "type": "rule",
+      "declared_type": "rule",
+      "maturity": "proven",
+      "status": null,
+      "topic": "git-workflow",
+      "last_verified": "2026-08-22",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 1,
+      "t_valid": null,
+      "t_invalid": null
+    },
+    {
+      "id": "team-memory/rules/shared-repo-fetch-before-write.md",
+      "canonical_path": "team-memory/rules/shared-repo-fetch-before-write.md",
+      "name": "shared-repo-fetch-before-write",
+      "type": "rule",
+      "declared_type": "rule",
+      "maturity": "draft",
+      "status": null,
+      "topic": "git-workflow",
+      "last_verified": "2026-08-30",
+      "created": null,
+      "audience": null,
+      "paths": [],
+      "governs_paths": [],
+      "kind": null,
+      "cron": null,
+      "enabled": null,
+      "scope": null,
+      "description": null,
+      "channel_type": null,
+      "target_kind": null,
+      "target_value": null,
+      "target_symbol": null,
+      "line": null,
+      "host_script": null,
+      "confidence": 0.4,
+      "t_valid": null,
+      "t_invalid": null
+    }
+  ],
+  "edges": [
+    {
+      "from": "team-memory/decisions/adr-001-file-based-memory.md",
+      "to": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "to": "team-memory/decisions/adr-001-file-based-memory.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-001-file-based-memory.md",
+      "to": "team-memory/decisions/adr-003-hybrid-recall.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-003-hybrid-recall.md",
+      "to": "team-memory/decisions/adr-001-file-based-memory.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-001-file-based-memory.md",
+      "to": "team-memory/decisions/recall-latency-benchmark.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/recall-latency-benchmark.md",
+      "to": "team-memory/decisions/adr-001-file-based-memory.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-002-keyword-recall.md",
+      "to": "team-memory/decisions/adr-001-file-based-memory.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-001-file-based-memory.md",
+      "to": "team-memory/decisions/adr-002-keyword-recall.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-002-keyword-recall.md",
+      "to": "team-memory/decisions/recall-latency-benchmark.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/recall-latency-benchmark.md",
+      "to": "team-memory/decisions/adr-002-keyword-recall.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-002-keyword-recall.md",
+      "to": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "to": "team-memory/decisions/adr-002-keyword-recall.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-003-hybrid-recall.md",
+      "to": "team-memory/decisions/adr-002-keyword-recall.md",
+      "label": "supersedes"
+    },
+    {
+      "from": "team-memory/decisions/adr-003-hybrid-recall.md",
+      "to": "team-memory/decisions/adr-004-dedup-threshold.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-004-dedup-threshold.md",
+      "to": "team-memory/decisions/adr-003-hybrid-recall.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-003-hybrid-recall.md",
+      "to": "team-memory/decisions/recall-latency-benchmark.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/recall-latency-benchmark.md",
+      "to": "team-memory/decisions/adr-003-hybrid-recall.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-003-hybrid-recall.md",
+      "to": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "to": "team-memory/decisions/adr-003-hybrid-recall.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-004-dedup-threshold.md",
+      "to": "team-memory/decisions/recall-latency-benchmark.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/recall-latency-benchmark.md",
+      "to": "team-memory/decisions/adr-004-dedup-threshold.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-004-dedup-threshold.md",
+      "to": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "to": "team-memory/decisions/adr-004-dedup-threshold.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/why-agents-hallucinate-team-facts.md",
+      "to": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "to": "team-memory/decisions/why-agents-hallucinate-team-facts.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/why-agents-hallucinate-team-facts.md",
+      "to": "team-memory/rules/agent-output-needs-evidence.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/agent-output-needs-evidence.md",
+      "to": "team-memory/decisions/why-agents-hallucinate-team-facts.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/why-agents-hallucinate-team-facts.md",
+      "to": "team-memory/playbooks/weekly-memory-review.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/weekly-memory-review.md",
+      "to": "team-memory/decisions/why-agents-hallucinate-team-facts.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/dispatching-subagents.md",
+      "to": "team-memory/rules/agent-output-needs-evidence.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/agent-output-needs-evidence.md",
+      "to": "team-memory/playbooks/dispatching-subagents.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/dispatching-subagents.md",
+      "to": "team-memory/playbooks/onboarding-new-agent.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/onboarding-new-agent.md",
+      "to": "team-memory/playbooks/dispatching-subagents.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/dispatching-subagents.md",
+      "to": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "to": "team-memory/playbooks/dispatching-subagents.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/incident-response.md",
+      "to": "team-memory/rules/no-direct-main-push.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/no-direct-main-push.md",
+      "to": "team-memory/playbooks/incident-response.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/incident-response.md",
+      "to": "team-memory/rules/agent-output-needs-evidence.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/agent-output-needs-evidence.md",
+      "to": "team-memory/playbooks/incident-response.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/incident-response.md",
+      "to": "team-memory/playbooks/dispatching-subagents.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/dispatching-subagents.md",
+      "to": "team-memory/playbooks/incident-response.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/onboarding-new-agent.md",
+      "to": "team-memory/rules/no-direct-main-push.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/no-direct-main-push.md",
+      "to": "team-memory/playbooks/onboarding-new-agent.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/onboarding-new-agent.md",
+      "to": "team-memory/rules/shared-repo-fetch-before-write.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/shared-repo-fetch-before-write.md",
+      "to": "team-memory/playbooks/onboarding-new-agent.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/onboarding-new-agent.md",
+      "to": "team-memory/playbooks/weekly-memory-review.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/weekly-memory-review.md",
+      "to": "team-memory/playbooks/onboarding-new-agent.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/onboarding-new-agent.md",
+      "to": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "to": "team-memory/playbooks/onboarding-new-agent.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/weekly-memory-review.md",
+      "to": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "to": "team-memory/playbooks/weekly-memory-review.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/weekly-memory-review.md",
+      "to": "team-memory/rules/agent-output-needs-evidence.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/agent-output-needs-evidence.md",
+      "to": "team-memory/playbooks/weekly-memory-review.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/weekly-memory-review.md",
+      "to": "team-memory/rules/no-direct-main-push.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/no-direct-main-push.md",
+      "to": "team-memory/playbooks/weekly-memory-review.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/weekly-memory-review.md",
+      "to": "team-memory/decisions/adr-001-file-based-memory.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/adr-001-file-based-memory.md",
+      "to": "team-memory/playbooks/weekly-memory-review.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/playbooks/weekly-memory-review.md",
+      "to": "team-memory/decisions/recall-latency-benchmark.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/decisions/recall-latency-benchmark.md",
+      "to": "team-memory/playbooks/weekly-memory-review.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/agent-output-needs-evidence.md",
+      "to": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "to": "team-memory/rules/agent-output-needs-evidence.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "to": "team-memory/rules/no-direct-main-push.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/no-direct-main-push.md",
+      "to": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/shared-repo-fetch-before-write.md",
+      "to": "team-memory/rules/no-direct-main-push.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/no-direct-main-push.md",
+      "to": "team-memory/rules/shared-repo-fetch-before-write.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/shared-repo-fetch-before-write.md",
+      "to": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "label": "related"
+    },
+    {
+      "from": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "to": "team-memory/rules/shared-repo-fetch-before-write.md",
+      "label": "related"
+    }
+  ],
+  "cross_artifact_references": [
+    {
+      "id": "team-memory/decisions/adr-001-file-based-memory.md",
+      "name": "adr-001-file-based-memory",
+      "type": "decision",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    },
+    {
+      "id": "team-memory/decisions/adr-002-keyword-recall.md",
+      "name": "adr-002-keyword-recall",
+      "type": "decision",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    },
+    {
+      "id": "team-memory/decisions/adr-003-hybrid-recall.md",
+      "name": "adr-003-hybrid-recall",
+      "type": "decision",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    },
+    {
+      "id": "team-memory/decisions/adr-004-dedup-threshold.md",
+      "name": "adr-004-dedup-threshold",
+      "type": "decision",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    },
+    {
+      "id": "team-memory/decisions/recall-latency-benchmark.md",
+      "name": "recall-latency-benchmark",
+      "type": "decision",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    },
+    {
+      "id": "team-memory/decisions/why-agents-hallucinate-team-facts.md",
+      "name": "why-agents-hallucinate-team-facts",
+      "type": "decision",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    },
+    {
+      "id": "team-memory/playbooks/dispatching-subagents.md",
+      "name": "dispatching-subagents",
+      "type": "playbook",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    },
+    {
+      "id": "team-memory/playbooks/incident-response.md",
+      "name": "incident-response",
+      "type": "playbook",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    },
+    {
+      "id": "team-memory/playbooks/onboarding-new-agent.md",
+      "name": "onboarding-new-agent",
+      "type": "playbook",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    },
+    {
+      "id": "team-memory/playbooks/weekly-memory-review.md",
+      "name": "weekly-memory-review",
+      "type": "playbook",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    },
+    {
+      "id": "team-memory/rules/agent-output-needs-evidence.md",
+      "name": "agent-output-needs-evidence",
+      "type": "rule",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    },
+    {
+      "id": "team-memory/rules/every-rule-needs-falsifiable-contract.md",
+      "name": "every-rule-needs-falsifiable-contract",
+      "type": "rule",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    },
+    {
+      "id": "team-memory/rules/no-direct-main-push.md",
+      "name": "no-direct-main-push",
+      "type": "rule",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    },
+    {
+      "id": "team-memory/rules/shared-repo-fetch-before-write.md",
+      "name": "shared-repo-fetch-before-write",
+      "type": "rule",
+      "refs_in_hooks": 0,
+      "refs_in_skills": 0,
+      "refs_in_docs": 0
+    }
+  ],
+  "audience_matrix": {
+    "public_skill_count": 0,
+    "internal_skill_count": 0,
+    "mismatch_count": 0,
+    "mismatches": []
+  }
+}

@@ -47,6 +47,9 @@ function graphBoost() {
  * @param {string[]} [opts.maturityFilter=null] 默认不过滤（ADR-047-A1：draft 可召回、靠排名偏移保低位）；显式传数组才硬过滤.
  * @param {string[]} [opts.typeFilter] 限定 type
  * @param {string[]} opts.scopeFilter 限定 scope
+ * @param {'layered'|'flat'} [opts.rankProfile='layered'] eval 消融臂（eval/README.md 纪律 3）：
+ *   flat 关掉全部分层结构（maturity 排名偏移 + KG 邻接 boost），只跑底层 FTS+vec 纯 RRF，
+ *   返回值回显 rank_profile 供 eval fail-closed 校验。生产调用不传即 layered，行为不变
  * @param {Object} [opts.logCtx] { source, agentId, agentName, sessionId } 打点用
  * @returns {Promise<{ hits: Array, recall_log_id: number }>}
  */
@@ -64,8 +67,10 @@ export async function hybridRecall(opts = {}) {
     maturityFilter = null,
     typeFilter,
     scopeFilter,
+    rankProfile = 'layered',
     logCtx = {},
   } = opts
+  const flatArm = rankProfile === 'flat'
 
   if (!Array.isArray(scopeFilter) || scopeFilter.length === 0) {
     throw new Error('scopeFilter must be a non-empty array of authorized scopes')
@@ -150,14 +155,14 @@ export async function hybridRecall(opts = {}) {
   // RRF 融合（排名偏移加权）
   const scores = new Map()  // id → { row, rrf, srcs }
   ftsRows.forEach((row, idx) => {
-    const off = MATURITY_RANK_OFFSET[row.maturity] ?? 4
+    const off = flatArm ? 0 : (MATURITY_RANK_OFFSET[row.maturity] ?? 4)
     const effRank = idx + 1 + off
     const contribution = 1 / (RRF_K + effRank)
     scores.set(row.id, { row, rrf: contribution, srcs: ['fts'] })
   })
   vecRows.forEach((row, idx) => {
     const ex = scores.get(row.id)
-    const off = MATURITY_RANK_OFFSET[row.maturity] ?? 4
+    const off = flatArm ? 0 : (MATURITY_RANK_OFFSET[row.maturity] ?? 4)
     const effRank = idx + 1 + off
     const contribution = 1 / (RRF_K + effRank)
     if (ex) {
@@ -169,8 +174,9 @@ export async function hybridRecall(opts = {}) {
   })
 
   // KG 邻接只放大已融合候选；模块缺失（云端部署单元）/ 图不可用 / lookup 失败均保持原始 RRF 排名。
+  // flat 消融臂整段跳过（分层结构之一）。
   try {
-    const adjacency = await loadAdjacency()
+    const adjacency = flatArm ? null : await loadAdjacency()
     if (adjacency) {
       const candidates = [...scores.values()]
       const neighborCandidates = new Set()
@@ -257,7 +263,7 @@ export async function hybridRecall(opts = {}) {
     console.error('[recall] log insert failed:', e.message)
   }
 
-  return { hits, recall_log_id: recallLogId, duration_ms: durationMs, query_path: queryPath }
+  return { hits, recall_log_id: recallLogId, duration_ms: durationMs, query_path: queryPath, rank_profile: rankProfile }
 }
 
 /**

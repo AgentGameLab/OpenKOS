@@ -40,9 +40,13 @@ const GIT_MIRROR_QUEUE = path.join(ROOT, '.asi', 'git-mirror-queue.jsonl')
 
 function isInsideRepo(relPath) {
   if (!relPath || typeof relPath !== 'string') return false
-  if (path.isAbsolute(relPath)) return false
   const p = relPath.replace(/\\/g, '/')
-  return p !== '..' && !p.startsWith('../')
+  if (path.isAbsolute(relPath)) return false
+  if (/^[a-zA-Z]:[/\\]/.test(relPath)) return false   // Windows 盘符
+  if (p.startsWith('//')) return false                 // UNC
+  if (p.startsWith('/')) return false                  // posix 绝对
+  const norm = path.posix.normalize(p)
+  return norm !== '..' && !norm.startsWith('../')
 }
 
 function emitGitMirrorEvent({ id, relPath, scope, kosAction, authorAgentId }) {
@@ -222,23 +226,34 @@ async function handleIndexOnlyWrite(rawBody, authAgent, t0) {
     return { status: 400, body: { ok: false, error: 'slug or name is required' } }
   }
 
+  const kosFile = rawBody.kos_file ?? null
+  if (kosFile !== null) {
+    if (typeof kosFile !== 'string' || !isInsideRepo(kosFile)) {
+      return {
+        status: 400,
+        body: { ok: false, error: 'kos_file must be a repo-relative path (no absolute path, no ".." traversal)', field: 'kos_file' },
+      }
+    }
+  }
+  const normalizedKosFile = kosFile === null ? null : kosFile.replace(/\\/g, '/')
+
   try {
     const result = await storeMemory({
       content: rawBody.content,
       name,
       description: rawBody.description,
       type,
-      scope: 'all-agents',
+      scope: normalizeLegacyScope('all-agents'),
       tags: Array.isArray(rawBody.tags) ? rawBody.tags : [],
       importance: rawBody.importance,
       metadata: {
         kos_slug: rawBody.slug || null,
         kos_type: rawBody.kos_type || type,
-        kos_file: rawBody.kos_file || null,
+        kos_file: normalizedKosFile,
         indexed_by: 'kos-index-sync',
       },
       author_agent_id: authAgent?.agent_id || null,
-      source_file: rawBody.kos_file || null,
+      source_file: normalizedKosFile,
     })
 
     if (result.status !== 'duplicate') {
@@ -315,9 +330,36 @@ export async function handleMemoryWrite(rawBody, authAgent, opts = {}) {
   try {
     kosResult = await kosRemember(input)
   } catch (err) {
-    const isPolicyBlock = typeof err.message === 'string' && err.message.startsWith('BLOCKED:')
+    const POLICY_ERROR_CODES = new Set(['KOS_DEDUP_GATE', 'KOS_SENTINEL_GATE'])
+    const isDedupBlock = err.code === 'KOS_DEDUP_GATE'
+    const isPolicyBlock =
+      POLICY_ERROR_CODES.has(err.code) ||
+      (typeof err.message === 'string' && err.message.startsWith('BLOCKED:'))
     if (isPolicyBlock) {
-      return { status: 422, body: { ok: false, error: err.message, blocked: true } }
+      if (isDedupBlock) {
+        return {
+          status: 409,
+          body: {
+            ok: false,
+            error: err.message,
+            blocked: true,
+            code: err.code,
+            candidates: err.candidates,
+            max_score: err.maxScore,
+            attempted: err.attempted,
+          },
+        }
+      }
+      return {
+        status: 422,
+        body: {
+          ok: false,
+          error: err.message,
+          blocked: true,
+          ...(err.code ? { code: err.code } : {}),
+          ...(err.findings ? { findings: err.findings } : {}),
+        },
+      }
     }
     console.error('[kos_remember] failed:', err.stack || err.message)
     return {
@@ -349,6 +391,7 @@ export async function handleMemoryWrite(rawBody, authAgent, opts = {}) {
             kos_type: input.type,
             kos_file: relPath,
           },
+          source_file: relPath,
           author_agent_id: authAgent?.agent_id || null,
           last_corrected_at: input.lastCorrectedAt || null,
           expires_at: input.expiresAt || null,

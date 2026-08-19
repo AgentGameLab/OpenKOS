@@ -26,7 +26,7 @@ export const kosRememberInputSchema = {
   draft: z.boolean().optional(),
   confirmNew: z.boolean().optional(),
   dedupReason: z.string().optional(),
-  updateTarget: z.string().optional(),
+  updateTarget: z.string().optional().describe('含 / 时 = 仓内相对路径显式覆盖写入目标（限 team-memory/ 与 docs/architecture/ 下已存在 .md；ADR 摘要卡/全文卡并存时必填）；裸 slug 仅声明「这是更新」跳过去重闸'),
 }
 
 export async function runKosRemember(args, dependencies = {}) {

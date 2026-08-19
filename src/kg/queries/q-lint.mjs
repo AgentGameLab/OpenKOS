@@ -101,6 +101,33 @@ for (const n of graph.nodes) {
   }
 }
 
+// (7) 图外文件：解析失败 → 根本没有节点 → 不出现在上面任何一项里
+//
+// 2026-08-18 加。此前 health score / maturity 缺失 / cold 全部只统计**已建进图**的节点，
+// 而 frontmatter 缺失或未闭合的 .md 压根不生成节点 —— 于是最坏的那批文件对所有指标不可见。
+// 实测：q-lint 报 maturity 缺失 8（算得完全正确），直接扫 frontmatter 边界得 15，
+// 差额 7 全是无 frontmatter 文件，抽查 3/3 确认不在 .knowledge-graph.json。
+// 判据来源 team-memory/rules/rate-metric-denominator-hides-missed-runs.md：
+// 分母由「会排除失败者的机制」决定时，失败得越彻底越不进分母。
+//
+// 所以这一项**必须绕开 graph，直接扫文件系统** —— 用一个独立于被测系统的口径。
+const SCANNED_DIRS = ['rules', 'playbooks']
+const unparseable = []
+for (const sub of SCANNED_DIRS) {
+  const dir = path.join(ROOT, 'team-memory', sub)
+  let entries = []
+  try { entries = fs.readdirSync(dir) } catch { continue }
+  for (const f of entries) {
+    if (!f.endsWith('.md')) continue
+    const rel = `team-memory/${sub}/${f}`
+    let raw
+    try { raw = fs.readFileSync(path.join(dir, f), 'utf8') } catch { continue }
+    const text = raw.replace(/\r\n/g, '\n')
+    if (!text.startsWith('---\n')) { unparseable.push({ path: rel, why: '无 frontmatter' }); continue }
+    if (text.slice(4).indexOf('\n---\n') === -1) { unparseable.push({ path: rel, why: 'frontmatter 未闭合' }) }
+  }
+}
+
 function loadZoneNameById(p) {
   const m = new Map()
   if (!fs.existsSync(p)) return m
@@ -127,9 +154,10 @@ report.push(`- 🔗 Orphan code-files (no imports edge): **${orphanCode.length}*
 report.push(`- ⚠️  Audience mismatches: **${audienceMismatches.length}**`)
 report.push(`- ❓ Maturity field missing: **${maturityMissing.length}**`)
 report.push(`- 📨 Channel-routing suspects (per-node + hq zone): **${channelSuspects.length}**`)
+report.push(`- ⛔ 图外文件（解析失败，不进上面任何一项）: **${unparseable.length}**`)
 report.push('')
 
-const totalIssues = staleRefs.length + cold.length + audienceMismatches.length + maturityMissing.length + channelSuspects.length
+const totalIssues = staleRefs.length + cold.length + audienceMismatches.length + maturityMissing.length + channelSuspects.length + unparseable.length
 // 分类加权 + 每类饱和上限。旧公式 max(0,100-issues*2) 在 50 个 issue 就锁死到 0：
 //   任何 50~1000 个 issue 都得 0 分 → 指标退化成「过/不过 50」的二值 flag，无分辨力。
 //   而 88 rules+87 playbooks 的库，单 cold/maturity 检测就结构性超 50，分数永久红。
@@ -140,11 +168,24 @@ const penalty =
   Math.min(15, audienceMismatches.length * 3) +
   Math.min(15, channelSuspects.length * 3) +
   Math.min(15, cold.length * 1.5) +
-  Math.min(10, maturityMissing.length * 0.5)
+  Math.min(10, maturityMissing.length * 0.5) +
+  // 图外文件权重高于 maturity 缺失：那只是少个字段，这是整份内容不进图、不参与召回 = 写了没入库。
+  // 上限 20（低于 stale 的 40，高于 hygiene 类）——留出分辨力，不让它单独把分数锁死。
+  Math.min(20, unparseable.length * 2.5)
 const healthScore = Math.max(0, Math.round(100 - penalty))
 
-report.push(`**Health score**: ${healthScore}/100 (${totalIssues} issues · stale=${staleRefs.length} cold=${cold.length} maturity=${maturityMissing.length} audience=${audienceMismatches.length} channel=${channelSuspects.length})`)
+report.push(`**Health score**: ${healthScore}/100 (${totalIssues} issues · stale=${staleRefs.length} cold=${cold.length} maturity=${maturityMissing.length} audience=${audienceMismatches.length} channel=${channelSuspects.length} offgraph=${unparseable.length})`)
 report.push('')
+
+if (unparseable.length > 0) {
+  report.push('## ⛔ 图外文件（解析失败 → 无节点 → 上面所有指标都看不见它们）')
+  report.push('')
+  for (const u of unparseable) report.push(`- \`${u.path}\` — ${u.why}`)
+  report.push('')
+  report.push('> 代价不止统计不好看：无节点 = 不参与 lint/cold/stale 检测，且 `kos-recall` 的 description/name/tags 三路打分全空，只剩 body ×2，排名结构性偏低——**等于写了没入库**。')
+  report.push('> 修法：补 frontmatter（至少 name/type/maturity）。防复发的写入闸见 `.claude/hooks/check-maturity-frontmatter.js` 守则 3。')
+  report.push('')
+}
 
 if (staleRefs.length > 0) {
   report.push('## 🔁 Stale references (top 10)')

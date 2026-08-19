@@ -1,7 +1,13 @@
 // KOS authz 收口冒烟：正控 + 负控。不依赖 DB。
-// 用法：node .tmp/authz-smoke.mjs <authz.mjs 的绝对路径>
-const modPath = process.argv[2]
-const m = await import(`file:///${modPath.replace(/\\/g, '/')}`)
+// 用法：node test/authz-smoke.mjs [authz.mjs 路径]
+// 省略参数 = 测同仓的 ../lib/authz.mjs。原来参数必填且不校验，忘传直接崩在
+// `undefined.replace` 上（看起来像 authz 坏了，其实是没给参数）——默认值消掉这个坑。
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const modPath = process.argv[2] || resolve(here, '..', 'lib', 'authz.mjs')
+const m = await import(pathToFileURL(resolve(modPath)).href)
 const { resolvePrincipalAuthorization, authorizeRequestedScopes, authorizeWriteScope, resolveWriteScopes, resolveDefaultScopes } = m
 
 let pass = 0, fail = 0
@@ -22,7 +28,10 @@ process.env.TM_MEMORY_AUTHZ_GRANTS = JSON.stringify({
 })
 
 console.log('\n— 正控 —')
-t('core 可读三环', () => eq(authorizeRequestedScopes(resolvePrincipalAuthorization({ resident_id: CORE }), ['all-agents', 'line-example'], []).sort(), ['core', 'line-example']))
+// 请求侧故意仍传 legacy 名 all-agents：2026-08-06 Commons 更名 core 后，授权层要把
+// 它归一成 canonical 再返回。断言写成 core 才测得到这次归一——写成 all-agents 等于
+// 断言「改名没发生」（这条曾停在改名前的期望上，实现对、测试错）。
+t('core 可读三环（legacy 名请求归一为 canonical）', () => eq(authorizeRequestedScopes(resolvePrincipalAuthorization({ resident_id: CORE }), ['all-agents', 'line-example'], []).sort(), ['core', 'line-example']))
 t('line 可读 shared', () => eq(authorizeRequestedScopes(resolvePrincipalAuthorization({ resident_id: LINE }), ['shared'], []), ['shared']))
 t('line 可写自己环', () => eq(authorizeWriteScope(resolvePrincipalAuthorization({ resident_id: LINE }), 'line-example'), 'line-example'))
 t('只读 principal 免填 writeScopes', () => { const p = resolvePrincipalAuthorization({ resident_id: READER }); eq(p.scopes, ['shared']) })

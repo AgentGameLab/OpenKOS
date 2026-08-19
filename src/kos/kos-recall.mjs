@@ -124,7 +124,10 @@ function stripQuotes(value) {
 }
 
 // 排除目录名集合 (snapshot/ snapshots/ pointers/ _drafts)
-const EXCLUDED_DIR_NAMES = new Set(['snapshot', 'snapshots', 'pointers', '_drafts'])
+// sediment-chunks: findings/ 白名单递归会撞到 team-memory/findings/sediment-chunks/
+// （--scan 产线 08-03 起落盘），不排除则绕过 KOS_RECALL_SEDIMENT 闸重回热路径。
+// sedimentDirs() 直接以 chunks 目录为根传入，排除只作用于子目录项，闸内不受影响。
+const EXCLUDED_DIR_NAMES = new Set(['snapshot', 'snapshots', 'pointers', '_drafts', 'sediment-chunks'])
 
 function listMarkdownFiles(dir) {
   if (!fs.existsSync(dir)) return []
@@ -178,13 +181,24 @@ function teamDirsForType(type) {
 }
 
 // ADR-047-A2 · sediment-chunks 每日沉淀扫描 (type=all 时可见)
+//
+// 默认关闭。这段代码从 2026-07-13 起就存在，但 sediment-chunks/ 目录一直没人
+// 生成，所以它一直恒返回空 —— 直到 08-03 批量 chunker 上线，目录里落了 3546
+// 个文件，热路径实测从 ~200ms 掉到 ~1050ms（5×）。Tier1 是全文件读取排序，
+// 代价随文件数线性涨，而 ADR-047-A2 明确「不动现役热路径」。
+//
+// 所以开关默认关，正解是把 sediment 放进 Tier2 的向量索引（Tier2 一致性归属
+// 见 ADR-047-A2 §4），而不是往 Tier1 里堆文件。设 KOS_RECALL_SEDIMENT=1
+// 可临时打开做对比实验。
 function sedimentDirs() {
+  if (process.env.KOS_RECALL_SEDIMENT !== '1') return []
   const base = path.join(ROOT, 'research', 'by-owner')
   if (!fs.existsSync(base)) return []
   try {
     return fs.readdirSync(base, { withFileTypes: true })
       .filter((e) => e.isDirectory())
       .map((e) => path.join(base, e.name, 'sediment-chunks'))
+      .concat([path.join(ROOT, 'team-memory', 'findings', 'sediment-chunks')])
       .filter((p) => fs.existsSync(p))
   } catch { return [] }
 }
@@ -208,8 +222,39 @@ function normalize(value) {
   return String(value || '').toLowerCase()
 }
 
+// 2026-08-18 修：整串 token 不再无条件进 terms。
+//
+// 原实现对每个 token 先 push 整串、再 push 汉字 bigram。对中文 query 这是双重伤害：
+// 中文没有空格，整条 query 就是**一个** token，于是「个人操作（公安备案派单）发哪个渠道」
+// 这整串成为 term #1。它只可能被逐字抄了 query 的文档命中——对任何真实知识卡永远不命中，
+// 却占满分母的 1/13。而「逐字包含」这条路 matchesQuery 第一行的 text.includes(q) 早已覆盖
+// 并给了 flat bonus，整串进 terms 纯属重复计算。
+// 实测 gold-003：正确答案卡命中 3/13 = 0.46 分，进不了 top5。
+//
+// 新规则：一个 token 的信息拆成「汉字段 bigram」+「非汉字段」两类；
+// 只有两类都拆不出东西时才回退到整串（保住纯符号 / 单字 query）。
+// 混合 token 如「飞书ou_id」→ ['飞书', 'ou_id']，两部分都不丢。
 function queryTerms(query) {
-  return normalize(query).trim().split(/\s+/).filter(Boolean)
+  const tokens = normalize(query).trim().split(/\s+/).filter(Boolean)
+  const expanded = []
+  for (const token of tokens) {
+    const parts = []
+    for (const run of token.match(/\p{Script=Han}+/gu) || []) {
+      const characters = [...run]
+      if (characters.length === 1) { parts.push(run); continue }
+      for (let index = 0; index < characters.length - 1; index += 1) {
+        parts.push(characters.slice(index, index + 2).join(''))
+      }
+    }
+    // 非汉字段（英文词 / id / 路径 / 版本号）：整段保留，它们没有 bigram 这一层
+    for (const seg of token.split(/\p{Script=Han}+/u)) {
+      const cleaned = seg.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+      if (cleaned.length >= 2) parts.push(cleaned)
+    }
+    if (parts.length === 0) expanded.push(token)
+    else expanded.push(...parts)
+  }
+  return [...new Set(expanded)]
 }
 
 function termAliases(term) {
@@ -497,9 +542,7 @@ function scopeToDbFilter(scope) {
 // 旧版直连 DB（需 TM_DATABASE_URL，客户端没有 → 等于没启用）；改走 HTTP + client embed，
 // 复用 team-prompt-recall hook pattern，凭据收在 service 单点（不扩散 DB URL 到客户端）。
 async function pgRecall(args) {
-  loadEnvLocal()
-  const base = (process.env.KOS_SERVICE_URL || process.env.TM_SERVICE_URL || '').replace(/\/$/, '')
-  const token = process.env.KOS_SERVICE_TOKEN
+  const { base, token } = pgRecallConfig()
   if (!base || !token) return []  // 未配置 → 优雅返空，不报错
   const queryEmbedding = await embedQuery(args.query)  // null → service 降级 FTS
   let data
@@ -538,6 +581,14 @@ async function pgRecall(args) {
   }))
 }
 
+function pgRecallConfig() {
+  loadEnvLocal()
+  return {
+    base: (process.env.KOS_SERVICE_URL || process.env.TM_SERVICE_URL || '').replace(/\/$/, ''),
+    token: process.env.KOS_SERVICE_TOKEN,
+  }
+}
+
 // Tier-1（本地词面 fieldScore，整数量纲，可到几十）与 Tier-2（pgRecall RRF，量纲 ~1/(60+rank)≈0.016）
 // 分数不同量纲、跨条不可比。旧代码统一 toFixed(1) → 所有 Tier-2 语义命中一律显示 "0.0"，
 // 消费方（LLM agent）会把精准的语义召回误读成「零命中」而跳过。排序本身是 rank-based 合并（见
@@ -559,6 +610,8 @@ function formatTextEntries(results) {
       `    id: ${r.id || r.slug}`,
       `    slug: ${r.slug}`,
       `    type: ${r.type || '(unknown)'} | maturity: ${r.maturity || '(unknown)'} | status: ${r.status || '(unknown)'}`,
+      // 2026-08-19 L1-⑥：description 是人写的摘要层，优先于盲切 snippet 展示（backfill-descriptions 补全后全量可用）
+      ...(r.description ? [`    desc: ${r.description}`] : []),
       `    snippet: ${r.snippet}`,
     ]
     if (Array.isArray(r.neighbors) && r.neighbors.length) {
@@ -574,7 +627,8 @@ function recallIdSet(results) {
 }
 
 // Tier-1/Tier-2 都已在各自层内排序；在路径去重后按合并排名做 maturity 偏移，
-// 不对 RRF/keyword 分数乘权，避免把 draft 隐性硬过滤。无 maturity 的 file 层条目按 verified 同档。
+// 不对 RRF/keyword 分数乘权，避免把 draft 隐性硬过滤。
+// Tier mismatch fix: unlabeled entries now match the server-side draft offset.
 function mergeRankedResults(tiers, limit) {
   const mergedByKey = new Map()
   for (const tier of tiers) {
@@ -591,7 +645,7 @@ function mergeRankedResults(tiers, limit) {
     .map(({ item }, index) => ({
       item,
       rank: index + 1,
-      effectiveRank: Math.max(1, index + 1 + (MATURITY_RANK_OFFSET[item.maturity] ?? 0)),
+      effectiveRank: Math.max(1, index + 1 + (MATURITY_RANK_OFFSET[item.maturity] ?? 4)),
     }))
     .sort((a, b) => a.effectiveRank - b.effectiveRank || a.rank - b.rank)
     .map(({ item }) => item)
@@ -622,32 +676,39 @@ async function main() {
       results = tier0
       backend = 'kg-tier0'
     } else {
-      // 1) Tier-1 local recall
-      try {
-        results = localRecall(args)
-      } catch (error) {
-        tier1Failed = true
-        trace.step('recall.backend_error', { backend: 'tier1', error: error.message })
-      }
-    }
+      const { base, token } = pgRecallConfig()
+      if (base && token) {
+        const [tier1Outcome, tier2Outcome] = await Promise.all([
+          Promise.resolve()
+            .then(() => localRecall(args))
+            .then(value => ({ value, error: null }))
+            .catch(error => ({ value: [], error })),
+          pgRecall(args)
+            .then(value => ({ value, error: null }))
+            .catch(error => ({ value: [], error })),
+        ])
 
-    // 2) Tier-2 触发门：无结果 或 最高分 < 2.0
-    const TIER2_TRIGGER_THRESHOLD = 2.0
-    const tier1TopScore = results.length > 0 ? Math.max(...results.map(r => Number(r.score) || 0)) : 0
-    const needTier2 = backend !== 'kg-tier0' && (tier1Failed || results.length === 0 || tier1TopScore < TIER2_TRIGGER_THRESHOLD)
+        if (tier1Outcome.error) {
+          tier1Failed = true
+          trace.step('recall.backend_error', { backend: 'tier1', error: tier1Outcome.error.message })
+        }
+        if (tier2Outcome.error) {
+          tier2Failed = true
+          trace.step('recall.backend_error', { backend: 'tier2', error: tier2Outcome.error.message })
+        }
 
-    if (needTier2) {
-      const tier1Results = tier1Failed ? [] : results
-      try {
-        const tier2 = await pgRecall(args)
-        results = mergeRankedResults([tier1Results, tier2], args.limit)
-        backend = tier1Failed ? 'tier2' : 'tier1+tier2'
-      } catch (error) {
-        tier2Failed = true
-        trace.step('recall.backend_error', { backend: 'tier2', error: error.message })
-        // 如果 tier1 有结果则保留，否则空
-        results = tier1Results.slice(0, args.limit)
-        backend = 'tier1'
+        results = tier2Failed
+          ? tier1Outcome.value.slice(0, args.limit)
+          : mergeRankedResults([tier1Outcome.value, tier2Outcome.value], args.limit)
+        backend = tier2Failed ? 'tier1' : (tier1Failed ? 'tier2' : 'tier1+tier2-parallel')
+      } else {
+        // Service env 未配置时保持 Tier-1-only graceful degradation。
+        try {
+          results = localRecall(args)
+        } catch (error) {
+          tier1Failed = true
+          trace.step('recall.backend_error', { backend: 'tier1', error: error.message })
+        }
       }
     }
 

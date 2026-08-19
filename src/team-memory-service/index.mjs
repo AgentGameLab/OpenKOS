@@ -360,6 +360,12 @@ httpServer = http.createServer(async (req, res) => {
         const body = await readJsonBody(req)
         requirePermission(auth.agent, 'memory:read')
         const authorizedScopes = authorizeRequestedScopes(auth.agent, body.scope_filter, resolveDefaultScopes(auth.agent))
+        const rankProfile = body.rank_profile === undefined ? 'layered' : body.rank_profile
+        if (!['layered', 'flat'].includes(rankProfile)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: `rank_profile 只接受 layered/flat，收到 ${String(body.rank_profile)}` }))
+          return
+        }
         const recallOptions = {
           queryText: body.query,
           queryEmbedding: body.query_embedding,
@@ -370,6 +376,7 @@ httpServer = http.createServer(async (req, res) => {
           scopeFilter: authorizedScopes,
           includeExpired: body.include_expired === true,
           includeSuperseded: body.include_superseded === true,
+          rankProfile,
           logCtx: {
             source: body.source || 'rest',
             agentId: auth.agent.agent_id,

@@ -5,6 +5,8 @@
   "type": "module",
   "main": "index.mjs",
   "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:authz": "node test/authz-smoke.mjs",
     "start": "node index.mjs --transport=http --port=3000",
     "start:dev": "node index.mjs --transport=http --port=3000 --bind=127.0.0.1",
     "import": "node import-from-md.mjs",

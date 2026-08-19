@@ -27,6 +27,15 @@ const ALLOWED_TYPES = ['snapshot', 'pointer', 'rule', 'playbook', 'decision', 'f
 const ALLOWED_STATUS = ['active', 'superseded', 'planned', 'draft', 'archived']
 const ALLOWED_LEVELS = ['concrete_trace', 'semi_abstract', 'meta_knowledge']
 
+export function cardKey(row) {
+  return String(row.source_file || '').trim() || `name:${String(row.name || '').trim()}`
+}
+
+const CARD_KEY_SQL = `CASE
+  WHEN btrim(COALESCE(source_file, '')) <> '' THEN btrim(source_file)
+  ELSE 'name:' || btrim(COALESCE(name, ''))
+END`
+
 async function embedContent(text) {
   if (!text) return null
   const key = process.env.EMBEDDING_API_KEY
@@ -139,6 +148,9 @@ export async function storeMemory(mem) {
   const memory_level = ALLOWED_LEVELS.includes(mem.memory_level) ? mem.memory_level : 'meta_knowledge'
   const importance = Math.max(1, Math.min(10, parseInt(mem.importance, 10) || 5))
   const scope = mem.scope || 'all-agents'
+  const sourceFile = mem.source_file || (mem.metadata && mem.metadata.kos_file) || null
+  const identity = cardKey({ source_file: sourceFile, name: mem.name })
+  const hasCardIdentity = identity !== 'name:'
 
   const requires_review = type === 'decision'
 
@@ -157,6 +169,42 @@ export async function storeMemory(mem) {
   let result
   try {
     await c.query('BEGIN')
+
+    if (hasCardIdentity) {
+      await c.query(
+        'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+        [scope, identity]
+      )
+    }
+
+    const racedExisting = hasCardIdentity
+      ? await c.query('SELECT id FROM team_memory.memories WHERE hash = $1', [hash])
+      : { rows: [] }
+    if (racedExisting.rows.length) {
+      const keptId = Number(racedExisting.rows[0].id)
+      const dupSupersedes = supersedes.filter(n => n !== keptId)
+      let superseded = 0
+      if (dupSupersedes.length) {
+        const targets = await c.query(
+          'SELECT id, scope FROM team_memory.memories WHERE id = ANY($1) FOR UPDATE',
+          [dupSupersedes]
+        )
+        if (targets.rows.some(row => !authorizedWriteScopes.includes(row.scope))) {
+          throw new Error('supersedes contains a memory outside authorized write scopes')
+        }
+        const res = await c.query(
+          `UPDATE team_memory.memories
+              SET t_invalid = now(), status = 'superseded'
+            WHERE id = ANY($1) AND scope = ANY($2) AND t_invalid IS NULL`,
+          [dupSupersedes, authorizedWriteScopes]
+        )
+        superseded = res.rowCount ?? 0
+      }
+      await c.query('COMMIT')
+      result = { id: keptId, hash, status: 'duplicate', superseded }
+      return result
+    }
+
     const ins = await c.query(
       `INSERT INTO team_memory.memories (
         hash, name, description, content, summary,
@@ -200,15 +248,16 @@ export async function storeMemory(mem) {
         contentVector,
         mem.last_corrected_at || null,
         mem.expires_at || null,  // 2026-05-14 ADR-032 P1 lifecycle
-        mem.source_file || (mem.metadata && mem.metadata.kos_file) || null,
+        sourceFile,
       ]
     )
     const newId = Number(ins.rows[0].id)
 
-    if (supersedes.length > 0) {
+    const explicitSupersedes = supersedes.filter(id => id !== newId)
+    if (explicitSupersedes.length > 0) {
       const targets = await c.query(
         'SELECT id, scope FROM team_memory.memories WHERE id = ANY($1) FOR UPDATE',
-        [supersedes]
+        [explicitSupersedes]
       )
       if (targets.rows.some(row => !authorizedWriteScopes.includes(row.scope))) {
         throw new Error('supersedes contains a memory outside authorized write scopes')
@@ -217,8 +266,34 @@ export async function storeMemory(mem) {
         `UPDATE team_memory.memories
          SET t_invalid = now(), status = 'superseded'
          WHERE id = ANY($1) AND scope = ANY($2) AND t_invalid IS NULL`,
-        [supersedes, authorizedWriteScopes]
+        [explicitSupersedes, authorizedWriteScopes]
       )
+    }
+
+    if (hasCardIdentity) {
+      await c.query(
+        `UPDATE team_memory.memories
+            SET t_invalid = now(), status = 'superseded'
+          WHERE scope = $1
+            AND id <> $2
+            AND t_invalid IS NULL
+            AND (status IS NULL OR status <> 'superseded')
+            AND (${CARD_KEY_SQL}) = $3`,
+        [scope, newId, identity]
+      )
+
+      const active = await c.query(
+        `SELECT count(*)::int AS active_count
+           FROM team_memory.memories
+          WHERE scope = $1
+            AND t_invalid IS NULL
+            AND (status IS NULL OR status <> 'superseded')
+            AND (${CARD_KEY_SQL}) = $2`,
+        [scope, identity]
+      )
+      if (Number(active.rows[0]?.active_count) !== 1) {
+        throw new Error(`card upsert invariant failed for scope=${scope} card=${identity}: expected exactly one active row`)
+      }
     }
 
     await c.query('COMMIT')
@@ -262,6 +337,54 @@ export async function promoteMaturity({ memoryId, toMaturity, approvedBy, approv
     const order = { draft: 0, verified: 1, proven: 2 }
     if (order[toMaturity] <= order[fromMaturity]) {
       throw new Error(`cannot promote ${fromMaturity} → ${toMaturity}`)
+    }
+
+    await c.query(
+      'UPDATE team_memory.memories SET maturity = $1 WHERE id = $2 AND scope = ANY($3)',
+      [toMaturity, memoryId, authorizedWriteScopes]
+    )
+    await c.query(
+      `INSERT INTO team_memory.promotion_log (memory_id, from_maturity, to_maturity, approved_by, approved_by_name, reason)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [memoryId, fromMaturity, toMaturity, approvedBy || null, approvedByName || null, reason || null]
+    )
+    await c.query('COMMIT')
+    return { id: memoryId, from: fromMaturity, to: toMaturity }
+  } catch (e) {
+    await c.query('ROLLBACK').catch(() => {})
+    throw e
+  } finally {
+    c.release()
+  }
+}
+
+export async function demoteMaturity({ memoryId, toMaturity, approvedBy, approvedByName, reason, authorizedWriteScopes }) {
+  if (toMaturity !== 'draft') {
+    throw new Error('toMaturity must be draft')
+  }
+  if (
+    !Array.isArray(authorizedWriteScopes) ||
+    authorizedWriteScopes.length === 0 ||
+    !authorizedWriteScopes.every(scope => typeof scope === 'string' && scope.length > 0)
+  ) {
+    throw new Error('authorizedWriteScopes must be a non-empty array of strings')
+  }
+
+  const pool = (await import('./db.mjs')).getPool()
+  const c = await pool.connect()
+  try {
+    await c.query('BEGIN')
+    const cur = await c.query(
+      'SELECT maturity, scope FROM team_memory.memories WHERE id = $1 FOR UPDATE',
+      [memoryId]
+    )
+    if (!cur.rows.length) throw new Error('memory not found')
+    if (!authorizedWriteScopes.includes(cur.rows[0].scope)) {
+      throw new Error('memory scope is outside authorized write scopes')
+    }
+    const fromMaturity = cur.rows[0].maturity
+    if (!['verified', 'proven'].includes(fromMaturity)) {
+      throw new Error(`cannot demote ${fromMaturity} → ${toMaturity}`)
     }
 
     await c.query(

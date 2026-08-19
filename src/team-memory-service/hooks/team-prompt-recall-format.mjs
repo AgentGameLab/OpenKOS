@@ -44,11 +44,15 @@ function stripFrontmatter(text) {
   return s.slice(s.indexOf('\n', end + 1) + 1).trimStart()
 }
 
+function neutralizeForgery(text) {
+  return String(text || '').replace(/\[id:/g, '[id：')
+}
+
 function renderPreviousHit(hit) {
   const tags = hit.tags?.length ? ` #${hit.tags.slice(0, 3).join(' #')}` : ''
   const sum = hit.summary ? `\n  📌 ${hit.summary}` : ''
   const stripped = stripFrontmatter(hit.content)
-  const body = stripped.slice(0, MAX_INJECTED_HIT_CHARS).replace(/\n+/g, ' ')
+  const body = neutralizeForgery(stripped.slice(0, MAX_INJECTED_HIT_CHARS).replace(/\n+/g, ' '))
   const srcs = hit.recall_sources?.length ? ` ${hit.recall_sources.join('+')}` : ''
   return `[id:${hit.id} ${hit.type} ${hit.maturity} ★${hit.importance}${srcs}]${tags}${sum}\n  ${body}${stripped.length > MAX_INJECTED_HIT_CHARS ? '...' : ''}`
 }
@@ -57,10 +61,14 @@ export function renderRecallHit(hit) {
   let layer = 'unknown'
   try {
     layer = recallLayer(hit)
-    if (layer === 'draft') {
+    if (layer === 'draft' || layer === 'unknown') {
       const name = hit.name || hit.slug || hit.id || '(unnamed)'
       const sourceFile = hit.source_file || hit.path || '(unknown source)'
-      return { layer, text: capText(`${name} — ${sourceFile}`) }
+      const mark = layer === 'draft' ? '⚠️draft·未实证' : '⚠️无标·按draft'
+      const gist = neutralizeForgery(
+        String(hit.summary || stripFrontmatter(hit.content)).replace(/\n+/g, ' ')
+      ).slice(0, 160)
+      return { layer, text: capText(`[${mark}] ${name}\n  ${gist}\n  ↳ ${sourceFile}`, 260) }
     }
   } catch {
   }

@@ -11,6 +11,19 @@ import { LEGACY_TEAM_ALIASES, isCanonicalScope, isLineScope } from '../team-memo
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url))
 const ROOT = process.env.KOS_DATA_ROOT || path.resolve(__dirname, '..', '..')
+
+let _gitIdentityCache
+function gitIdentityFallback() {
+  if (_gitIdentityCache !== undefined) return _gitIdentityCache
+  try {
+    _gitIdentityCache = execSync('git config user.name', {
+      cwd: __dirname, timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim() || null
+  } catch {
+    _gitIdentityCache = null
+  }
+  return _gitIdentityCache
+}
 const METRIC_PATH = path.join(ROOT, '.asi', 'kos-write-metrics.jsonl')
 const TIER_PATTERNS_PATH = path.resolve(__dirname, '..', 'hooks', 'lib', 'tier-patterns.json')
 const PROJECT_MEMORY_KEY = path.resolve(ROOT)
@@ -111,76 +124,165 @@ function scheduleKgRefresh(writtenFile) {
   }
 }
 
+
+const RAW_FM_LINES = Symbol('kos-raw-fm-lines')
+const UNPARSEABLE = Symbol('kos-fm-unparseable')
+
+function makeRawFmValue(lines) {
+  return { [RAW_FM_LINES]: lines }
+}
+
+function isRawFmValue(value) {
+  return value != null && typeof value === 'object' && Array.isArray(value[RAW_FM_LINES])
+}
+
+function serializeFmField(key, value) {
+  if (isRawFmValue(value)) return [...value[RAW_FM_LINES]]
+  if (Array.isArray(value)) {
+    if (value.length === 0) return [`${key}: []`]
+    return [`${key}:`, ...value.map(item => `  - ${item}`)]
+  }
+  if (key === 'cues' && value && typeof value === 'object') {
+    const lines = [`${key}:`]
+    for (const cueKey of CUE_KEYS) {
+      const cueValues = value[cueKey]
+      if (!Array.isArray(cueValues) || cueValues.length === 0) continue
+      lines.push(`  ${cueKey}:`)
+      for (const cueValue of cueValues) lines.push(`    - ${cueValue}`)
+    }
+    return lines
+  }
+  if (key === 'written_by' && value && typeof value === 'object') {
+    return [
+      `${key}:`,
+      `  agent_id: ${value.agent_id}`,
+      `  session_id: ${value.session_id}`,
+      `  ts: ${value.ts}`,
+    ]
+  }
+  if (value && typeof value === 'object') {
+    throw new Error(`frontmatter 字段 ${key} 是对象但无已知序列化形状（仅 cues/written_by 支持对象值）`)
+  }
+  return [`${key}: ${value}`]
+}
+
+function parseKnownShape(key, rest, blockLines) {
+  let value
+  if (rest !== '') {
+    if (blockLines.length !== 1) return UNPARSEABLE // scalar 带续行（如 `k: >` 折叠串）→ raw
+    value = rest === '[]' ? [] : rest
+  } else {
+    const tail = blockLines.slice(1)
+    const obj = {}
+    let k = 0
+    while (k < tail.length) {
+      const nested = tail[k].match(/^  ([A-Za-z0-9_]+):\s*(.*)$/)
+      if (!nested) break
+      k++
+      if (nested[2] === '') {
+        const arr = []
+        while (k < tail.length && /^    -\s+/.test(tail[k])) {
+          arr.push(tail[k].replace(/^    -\s+/, ''))
+          k++
+        }
+        obj[nested[1]] = arr
+      } else if (nested[2] === '[]') {
+        obj[nested[1]] = []
+      } else {
+        obj[nested[1]] = nested[2]
+      }
+    }
+    if (Object.keys(obj).length) {
+      if (k !== tail.length) return UNPARSEABLE // 对象后还有残行（旧实现把残行漏回顶层循环丢掉）
+      value = obj
+    } else {
+      const arr = []
+      let j = 0
+      while (j < tail.length && /^\s+-\s+/.test(tail[j])) {
+        arr.push(tail[j].replace(/^\s+-\s+/, ''))
+        j++
+      }
+      if (j !== tail.length) return UNPARSEABLE // 对象列表（`- k: v` + 续行）走这里 → raw
+      value = arr
+    }
+  }
+  let out
+  try {
+    out = serializeFmField(key, value)
+  } catch {
+    return UNPARSEABLE
+  }
+  if (out.length !== blockLines.length) return UNPARSEABLE
+  for (let n = 0; n < out.length; n++) {
+    if (out[n] !== blockLines[n]) return UNPARSEABLE
+  }
+  return value
+}
+
 function parseFrontmatter(text) {
   text = text.replace(/\r\n/g, '\n') // CRLF 容错：归一化后再解析，否则 CRLF 文件 startsWith('---\n') 失败 → oldFm 空 → 更新时吐降级 frontmatter
-  if (!text.startsWith('---\n')) return { fm: {}, body: text }
+  if (!text.startsWith('---\n')) return { fm: {}, body: text, comments: {}, orphanLines: [] }
   const end = text.indexOf('\n---\n', 4)
-  if (end < 0) return { fm: {}, body: text }
+  if (end < 0) return { fm: {}, body: text, comments: {}, orphanLines: [] }
   const fmText = text.slice(4, end)
   const body = text.slice(end + 5) // skip '\n---\n'
   const fm = {}
+  const comments = {}
+  const orphanLines = []
+  let pendingComments = []
   const lines = fmText.split('\n')
   let i = 0
   while (i < lines.length) {
     const line = lines[i]
     if (!line.trim()) { i++; continue }
-    const m = line.match(/^([A-Za-z0-9_]+):\s*(.*)$/)
-    if (!m) { i++; continue }
-    const key = m[1]
-    const rest = m[2]
-    if (rest === '') {
-      const obj = {}
-      i++
-      while (i < lines.length) {
-        const nested = lines[i].match(/^  ([A-Za-z0-9_]+):\s*(.*)$/)
-        if (!nested) break
-        const nestedKey = nested[1]
-        const nestedRest = nested[2]
-        i++
-        if (nestedRest === '') {
-          const arr = []
-          while (i < lines.length && /^    -\s+/.test(lines[i])) {
-            arr.push(lines[i].replace(/^    -\s+/, ''))
-            i++
-          }
-          obj[nestedKey] = arr
-        } else if (nestedRest === '[]') {
-          obj[nestedKey] = []
-        } else {
-          obj[nestedKey] = nestedRest
+    if (/^#/.test(line)) { pendingComments.push(line); i++; continue }
+    const blockLines = [line]
+    i++
+    while (i < lines.length) {
+      const next = lines[i]
+      if (next.trim() && /^\s/.test(next)) { blockLines.push(next); i++; continue }
+      if (!next.trim()) {
+        let j = i + 1
+        while (j < lines.length && !lines[j].trim()) j++
+        if (j < lines.length && /^\s/.test(lines[j])) {
+          for (; i < j; i++) blockLines.push(lines[i])
+          continue
         }
       }
-      if (Object.keys(obj).length) {
-        fm[key] = obj
-        continue
-      }
-      const arr = []
-      while (i < lines.length && /^\s+-\s+/.test(lines[i])) {
-        arr.push(lines[i].replace(/^\s+-\s+/, ''))
-        i++
-      }
-      fm[key] = arr
-    } else if (rest === '[]') {
-      fm[key] = []
-      i++
-    } else {
-      fm[key] = rest
-      i++
+      break
     }
+    const m = blockLines[0].match(/^([A-Za-z0-9_]+):\s*(.*)$/)
+    if (!m) {
+      orphanLines.push(...pendingComments, ...blockLines)
+      pendingComments = []
+      continue
+    }
+    const key = m[1]
+    if (pendingComments.length) {
+      comments[key] = [...(comments[key] || []), ...pendingComments]
+      pendingComments = []
+    }
+    const value = parseKnownShape(key, m[2], blockLines)
+    fm[key] = value === UNPARSEABLE ? makeRawFmValue(blockLines) : value
   }
-  return { fm, body }
+  if (pendingComments.length) orphanLines.push(...pendingComments)
+  return { fm, body, comments, orphanLines }
 }
 
+let tierPatternsCache = null
+
 function loadTierPatterns() {
+  if (tierPatternsCache) return tierPatternsCache
   try {
     const parsed = JSON.parse(fs.readFileSync(TIER_PATTERNS_PATH, 'utf-8'))
     if (!Array.isArray(parsed.patterns)) throw new Error('缺少 patterns 数组')
-    return parsed.patterns.map((pattern, index) => {
+    tierPatternsCache = parsed.patterns.map((pattern, index) => {
       if (!pattern || typeof pattern.label !== 'string' || typeof pattern.source !== 'string') {
         throw new Error(`patterns[${index}] 缺少有效 label/source`)
       }
       return { ...pattern, regex: new RegExp(pattern.source, pattern.flags || '') }
     })
+    return tierPatternsCache
   } catch (err) {
     throw new Error(`BLOCKED: 无法加载分级词表 ${TIER_PATTERNS_PATH}: ${err.message}。敏感度先行——Core/Restricted 永不进 KOS`)
   }
@@ -288,7 +390,11 @@ function deriveCueEntities({ type, tags, name, description }) {
   const textEntities = (text.match(/[a-z][a-z0-9._-]{2,}/gi) || [])
     .map(token => token.toLowerCase().replace(/[._-]+$/, ''))
     .filter(token => token.length >= 3 && !CUE_ENTITY_STOPWORDS.has(token))
-  const cjkEntities = text.match(/[\u4e00-\u9fff]{2,6}/g) || []
+  const cjkEntities = (text.match(/\p{Script=Han}+/gu) || [])
+    .filter(run => {
+      const length = [...run].length
+      return length >= 2 && length <= 6
+    })
   return [...new Set([...tagEntities, ...textEntities, ...cjkEntities])].slice(0, 12)
 }
 
@@ -400,6 +506,7 @@ export async function remember({
   supersedes,               // 旧 memory id / file path
   lastCorrectedAt,     // ISO date or null（ADR-030 §3 Self-Reflex 字段）
   authoritativeSources,     // ADR-030 §3 Self-Reflex 字段
+  lastVerified,             // YYYY-MM-DD「最后一次被实证确认」（2026-08-09 补）
   description,
   name,
   maturity,                 // optional：显式 maturity（仅允许 ≥ 旧值时生效）
@@ -432,6 +539,8 @@ export async function remember({
   const tierPatterns = loadTierPatterns()
 
   const now = new Date().toISOString()
+  const agentId = process.env.KOS_AGENT_ID || process.env.CLAUDE_AGENT_ID || gitIdentityFallback() || 'unknown'
+  const sessionId = process.env.CLAUDE_SESSION_ID || process.env.KOS_SESSION_ID || null
   const id = crypto
     .createHash('sha256')
     .update(`${type}:${slug}:${content}`)
@@ -443,6 +552,8 @@ export async function remember({
 
   let oldFm = {}
   let oldBody = ''
+  let oldFmComments = {}
+  let oldOrphanLines = []
   const exists = fs.existsSync(filePath)
   if (exists) {
     try {
@@ -450,9 +561,13 @@ export async function remember({
       const parsed = parseFrontmatter(oldText)
       oldFm = parsed.fm
       oldBody = parsed.body
+      oldFmComments = parsed.comments
+      oldOrphanLines = parsed.orphanLines
     } catch {
       oldFm = {}
       oldBody = ''
+      oldFmComments = {}
+      oldOrphanLines = []
     }
   }
 
@@ -490,6 +605,12 @@ export async function remember({
   if (supersedes !== undefined) provided.supersedes = supersedes
   if (lastCorrectedAt !== undefined) provided.last_corrected_at = lastCorrectedAt
   if (authoritativeSources !== undefined) provided.authoritative_sources = authoritativeSources
+  if (lastVerified !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(lastVerified))) {
+      throw new Error(`BLOCKED: lastVerified 必须是 YYYY-MM-DD（收到「${String(lastVerified).slice(0, 30)}」）——时效判断靠它，坏格式会静默失效`)
+    }
+    provided.last_verified = lastVerified
+  }
   if (maturity !== undefined) provided.maturity = maturityGate.maturity
   if (status !== undefined) provided.status = status
   if (maturityGate.status !== undefined) provided.status = maturityGate.status
@@ -504,6 +625,7 @@ export async function remember({
   if (!merged.description) merged.description = `${type} · ${slug}`
   if (!merged.tags) merged.tags = []
   if (!merged.created) merged.created = now.slice(0, 10)
+  if (!exists) merged.written_by = { agent_id: agentId, session_id: sessionId, ts: now }
   merged.id = id
 
   const tierReasonText = typeof tierReason === 'string' ? tierReason.trim() : ''
@@ -524,26 +646,30 @@ export async function remember({
     console.error(`[kos_remember] 🚨 TIER REVIEW OVERRIDE：${matched}；原因：${tierReasonText}`)
   }
 
-  const mergedCues = normalizeCues(merged.cues)
-  if (mergedCues) {
-    merged.cues = mergedCues
-  } else {
-    delete merged.cues
-  }
-  if (!hasExplicitCues) {
-    const derivedEntities = deriveCueEntities({
-      type,
-      tags: merged.tags,
-      name: merged.name,
-      description: merged.description,
-    })
-    const entities = [...new Set([...(merged.cues?.entities || []), ...derivedEntities])].slice(0, 12)
-    if (entities.length) {
-      merged.cues = { ...(merged.cues || {}), entities }
+  const cuesIsRaw = isRawFmValue(merged.cues)
+  let mergedCues = null
+  if (!cuesIsRaw) {
+    mergedCues = normalizeCues(merged.cues)
+    if (mergedCues) {
+      merged.cues = mergedCues
+    } else {
+      delete merged.cues
+    }
+    if (!hasExplicitCues) {
+      const derivedEntities = deriveCueEntities({
+        type,
+        tags: merged.tags,
+        name: merged.name,
+        description: merged.description,
+      })
+      const entities = [...new Set([...(merged.cues?.entities || []), ...derivedEntities])].slice(0, 12)
+      if (entities.length) {
+        merged.cues = { ...(merged.cues || {}), entities }
+      }
     }
   }
 
-  if (['rule', 'decision', 'playbook'].includes(type) && oldFm.maturity == null && provided.maturity == null) {
+  if (oldFm.maturity == null && provided.maturity == null) {
     merged.maturity = 'draft'
     console.warn('[kos-remember] ⚠️ maturity 未显式提供，默认 draft（召回降权 0.7 + ⚠️未实证标记）。有实证请显式标 verified。')
   }
@@ -560,7 +686,7 @@ export async function remember({
 
   const HEAD_ORDER = [
     'name', 'description', 'type', 'scope', 'tags', 'cues',
-    'created', 'id', 'supersedes',
+    'created', 'written_by', 'id', 'supersedes',
     'last_corrected_at', 'authoritative_sources',
     'tier_review_reason',
     'maturity', 'status',
@@ -575,27 +701,18 @@ export async function remember({
   }
 
   const fmLines = []
+  const emittedCommentKeys = new Set()
   for (const k of orderedKeys) {
-    const v = merged[k]
-    if (Array.isArray(v)) {
-      if (v.length === 0) {
-        fmLines.push(`${k}: []`)
-      } else {
-        fmLines.push(`${k}:`)
-        for (const x of v) fmLines.push(`  - ${x}`)
-      }
-    } else if (k === 'cues' && v && typeof v === 'object') {
-      fmLines.push(`${k}:`)
-      for (const cueKey of CUE_KEYS) {
-        const cueValues = v[cueKey]
-        if (!Array.isArray(cueValues) || cueValues.length === 0) continue
-        fmLines.push(`  ${cueKey}:`)
-        for (const cueValue of cueValues) fmLines.push(`    - ${cueValue}`)
-      }
-    } else {
-      fmLines.push(`${k}: ${v}`)
+    if (oldFmComments[k]) {
+      fmLines.push(...oldFmComments[k])
+      emittedCommentKeys.add(k)
     }
+    fmLines.push(...serializeFmField(k, merged[k]))
   }
+  for (const [k, commentLines] of Object.entries(oldFmComments)) {
+    if (!emittedCommentKeys.has(k)) fmLines.push(...commentLines)
+  }
+  fmLines.push(...oldOrphanLines)
   const fmYaml = '---\n' + fmLines.join('\n') + '\n---\n\n'
   const body = fmYaml + content
 
@@ -654,7 +771,7 @@ export async function remember({
 
   let cuesWarning = null
   const cuesWarnLevel = { rule: 'strong', playbook: 'strong', decision: 'light' }[type]
-  if (cuesWarnLevel && process.env.KOS_CUES_WARN !== 'off') {
+  if (cuesWarnLevel && !cuesIsRaw && process.env.KOS_CUES_WARN !== 'off') {
     const hasStrongCues = !!mergedCues && ['paths', 'tools', 'cmds'].some(key => (mergedCues[key] || []).length > 0)
     const hasExplicitNonEmpty = hasExplicitCues && !!normalizedCues
     if (!hasStrongCues && !hasExplicitNonEmpty) {
@@ -695,6 +812,9 @@ export async function remember({
       JSON.stringify({
         ts: now,
         tool: 'kos_remember',
+        agent_id: agentId,
+        session_id: sessionId,
+        cwd: process.cwd(),
         args: { type, slug, scope: finalScope, supersedes: supersedes || null },
         action,
         file: path.relative(ROOT, filePath).replace(/\\/g, '/'),
@@ -938,6 +1058,7 @@ if (isCli) {
     console.log('  supersedes (string, optional)            旧 memory id / file path')
     console.log('  lastCorrectedAt (date, optional)    Self-Reflex 字段')
     console.log('  authoritativeSources (array, optional)   Self-Reflex 字段')
+    console.log('  lastVerified (YYYY-MM-DD, optional)      最后一次实证确认日期')
     console.log('  description / name (string, optional)    frontmatter 字段覆盖')
     console.log('  maturity / status (string, optional)     强字段（不允许降级）')
     console.log('  visibility (enum, optional)              private | department | company (ADR-034)')

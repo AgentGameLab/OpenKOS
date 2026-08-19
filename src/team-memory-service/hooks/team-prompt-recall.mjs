@@ -121,6 +121,15 @@ async function embedQuery(text) {
   } catch { return null }
 }
 
+function emitBlindNotice(reason) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `⚠️ [team memory] 召回服务不可用（${reason}），本轮无团队记忆注入——涉及团队规范/协议/成员分工的判断，先 kos-recall 手动补查再下结论。`,
+    },
+  }))
+}
+
 let input = ''
 process.stdin.setEncoding('utf-8')
 process.stdin.on('data', d => input += d)
@@ -164,11 +173,13 @@ process.stdin.on('end', async () => {
     })
     if (!r.ok) {
       logWarn(HOOK_NAME, 'service_error', { status: r.status, sessionId })
+      emitBlindNotice(`service_${r.status}`)
       process.exit(0)
     }
     recallData = await r.json()
   } catch (e) {
     logWarn(HOOK_NAME, 'fetch_failed', { err: e.message, sessionId })
+    emitBlindNotice(e.name === 'TimeoutError' ? 'timeout_3s' : 'fetch_failed')
     process.exit(0)
   }
 

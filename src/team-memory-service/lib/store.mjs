@@ -2,6 +2,12 @@
 import { query } from './db.mjs'
 import { createHash } from 'node:crypto'
 import { AuthorizationError } from './authz.mjs'
+import {
+  loadCanonicalCard,
+  planCanonicalMaturity,
+  writeCanonicalCard,
+  emitGitMirrorEvent,
+} from './canonical-card.mjs'
 
 export async function assertSupersedesWithinWriteScopes(supersedes, authorizedWriteScopes) {
   const ids = (Array.isArray(supersedes) ? supersedes : [])
@@ -31,7 +37,7 @@ export function cardKey(row) {
   return String(row.source_file || '').trim() || `name:${String(row.name || '').trim()}`
 }
 
-const CARD_KEY_SQL = `CASE
+export const CARD_KEY_SQL = `CASE
   WHEN btrim(COALESCE(source_file, '')) <> '' THEN btrim(source_file)
   ELSE 'name:' || btrim(COALESCE(name, ''))
 END`
@@ -308,10 +314,27 @@ export async function storeMemory(mem) {
   return result
 }
 
-export async function promoteMaturity({ memoryId, toMaturity, approvedBy, approvedByName, reason, authorizedWriteScopes }) {
-  if (!['verified', 'proven'].includes(toMaturity)) {
-    throw new Error('toMaturity must be verified or proven')
-  }
+const MATURITY_ORDER = { draft: 0, verified: 1, proven: 2 }
+const rankOfMaturity = (m) => (Object.hasOwn(MATURITY_ORDER, m) ? MATURITY_ORDER[m] : -1)
+
+const defaultCanonicalOps = {
+  loadCanonicalCard,
+  planCanonicalMaturity,
+  writeCanonicalCard,
+  emitGitMirrorEvent,
+}
+
+async function changeMaturity({
+  memoryId,
+  toMaturity,
+  direction,
+  approvedBy,
+  approvedByName,
+  reason,
+  authorizedWriteScopes,
+  allowFrozen = false,
+  canonicalOps = defaultCanonicalOps,
+}) {
   if (
     !Array.isArray(authorizedWriteScopes) ||
     authorizedWriteScopes.length === 0 ||
@@ -325,31 +348,139 @@ export async function promoteMaturity({ memoryId, toMaturity, approvedBy, approv
   try {
     await c.query('BEGIN')
     const cur = await c.query(
-      'SELECT maturity, scope FROM team_memory.memories WHERE id = $1 FOR UPDATE',
+      'SELECT maturity, scope, source_file FROM team_memory.memories WHERE id = $1 FOR UPDATE',
       [memoryId]
     )
     if (!cur.rows.length) throw new Error('memory not found')
-    if (!authorizedWriteScopes.includes(cur.rows[0].scope)) {
+    const scope = cur.rows[0].scope
+    if (!authorizedWriteScopes.includes(scope)) {
       throw new Error('memory scope is outside authorized write scopes')
     }
     const fromMaturity = cur.rows[0].maturity
+    const sourceFile = String(cur.rows[0].source_file || '').trim()
 
-    const order = { draft: 0, verified: 1, proven: 2 }
-    if (order[toMaturity] <= order[fromMaturity]) {
-      throw new Error(`cannot promote ${fromMaturity} → ${toMaturity}`)
+    if (direction === 'demote' && !['verified', 'proven'].includes(fromMaturity)) {
+      throw new Error(`cannot demote ${fromMaturity} → ${toMaturity}`)
     }
 
-    await c.query(
-      'UPDATE team_memory.memories SET maturity = $1 WHERE id = $2 AND scope = ANY($3)',
-      [toMaturity, memoryId, authorizedWriteScopes]
+    const siblings = sourceFile
+      ? (await c.query(
+        `SELECT id, maturity FROM team_memory.memories
+          WHERE scope = $1
+            AND id <> $2
+            AND t_invalid IS NULL
+            AND (status IS NULL OR status <> 'superseded')
+            AND btrim(COALESCE(source_file, '')) = $3
+          ORDER BY id
+          FOR UPDATE`,
+        [scope, memoryId, sourceFile]
+      )).rows
+      : []
+
+    const card = canonicalOps.loadCanonicalCard(sourceFile)
+    if (card && !card.found) {
+      throw new Error(
+        `canonical 文件找不到：${card.rel}（PG 行 id=${memoryId} 指向它）。` +
+        '卡可能已改名/删除，或服务端仓还没拉到这张新卡 —— 先确认 .md 已 push 到 origin/main 再重试；' +
+        '若这张卡确实不该再存在，走 supersede 退役该行，别升它的格。'
+      )
+    }
+    if (card && card.maturity && !Object.hasOwn(MATURITY_ORDER, card.maturity)) {
+      throw new Error(
+        `canonical ${card.rel} 的 maturity=${JSON.stringify(card.maturity)} 不是 draft|verified|proven，` +
+        '无法判断当前档位。先把 frontmatter 修成正统三档再升格。'
+      )
+    }
+
+    const fileMaturity = card ? card.maturity : null
+    const effectiveFrom = rankOfMaturity(fileMaturity) > rankOfMaturity(fromMaturity)
+      ? fileMaturity
+      : fromMaturity
+    if (direction === 'promote' && rankOfMaturity(toMaturity) < rankOfMaturity(effectiveFrom)) {
+      const side = effectiveFrom === fileMaturity && fileMaturity !== fromMaturity
+        ? `canonical ${card.rel} 已是 ${fileMaturity}（PG 行是 ${fromMaturity}，索引落后）`
+        : `当前是 ${fromMaturity}`
+      throw new Error(`cannot promote ${effectiveFrom} → ${toMaturity}：${side}。降级请走 demote，别用升格接口反向写。`)
+    }
+
+    const higherSiblings = siblings.filter(
+      row => rankOfMaturity(row.maturity) > rankOfMaturity(toMaturity)
     )
-    await c.query(
-      `INSERT INTO team_memory.promotion_log (memory_id, from_maturity, to_maturity, approved_by, approved_by_name, reason)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [memoryId, fromMaturity, toMaturity, approvedBy || null, approvedByName || null, reason || null]
-    )
+    if (direction === 'promote' && higherSiblings.length) {
+      throw new Error(
+        `同一张卡（${sourceFile}）在 PG 还有更高档的活行：` +
+        higherSiblings.map(row => `id=${row.id}(${row.maturity})`).join(' / ') +
+        `。升到 ${toMaturity} 会让同卡两档并存，哪张权威无法自动判定 —— ` +
+        '先用 kos-dedup-rows 收敛成一行，或直接对那张更高档的行操作。'
+      )
+    }
+
+    const plan = card ? canonicalOps.planCanonicalMaturity(card, toMaturity) : { changed: false }
+
+    const staleRows = [
+      ...(fromMaturity === toMaturity ? [] : [{ id: memoryId, maturity: fromMaturity }]),
+      ...siblings.filter(row => row.maturity !== toMaturity),
+    ]
+
+    if (!plan.changed && staleRows.length === 0) {
+      throw new Error(
+        direction === 'promote'
+          ? `cannot promote ${fromMaturity} → ${toMaturity}`
+          : `cannot demote ${fromMaturity} → ${toMaturity}`
+      )
+    }
+
+    if (plan.changed && card.frozen && !allowFrozen) {
+      throw new Error(
+        `canonical ${card.rel} 是 frozen 锚点（frozen_since ${card.fm.frozen_since || '?'}），` +
+        `改它的 maturity 等于改冻结内容，需 founder 显式解冻。` +
+        '确已获批 → 带 allow_frozen=true 重试，理由会一并写进 promotion_log。'
+      )
+    }
+
+    if (plan.changed) canonicalOps.writeCanonicalCard(card, plan.text)
+
+    if (staleRows.length) {
+      await c.query(
+        'UPDATE team_memory.memories SET maturity = $1 WHERE id = ANY($2) AND scope = ANY($3)',
+        [toMaturity, staleRows.map(row => Number(row.id)), authorizedWriteScopes]
+      )
+      for (const row of staleRows) {
+        const isTarget = Number(row.id) === Number(memoryId)
+        await c.query(
+          `INSERT INTO team_memory.promotion_log (memory_id, from_maturity, to_maturity, approved_by, approved_by_name, reason, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            row.id,
+            row.maturity,
+            toMaturity,
+            approvedBy || null,
+            approvedByName || null,
+            isTarget ? (reason || null) : `[同卡索引行随 id=${memoryId} 同步] ${reason || ''}`.trim(),
+            JSON.stringify({
+              via: 'promote_tool',
+              canonical_file: card ? card.rel : null,
+              canonical_written: Boolean(plan.changed),
+              canonical_frozen_override: Boolean(plan.changed && card?.frozen && allowFrozen),
+              sibling_of: isTarget ? null : Number(memoryId),
+            }),
+          ]
+        )
+      }
+    }
+
     await c.query('COMMIT')
-    return { id: memoryId, from: fromMaturity, to: toMaturity }
+    return {
+      id: memoryId,
+      scope,
+      from: fromMaturity,
+      to: toMaturity,
+      updatedIds: staleRows.map(row => Number(row.id)),
+      siblingIds: siblings.map(row => Number(row.id)),
+      canonical: card
+        ? { file: card.rel, written: Boolean(plan.changed), was: fileMaturity }
+        : { file: null, written: false, was: null },
+    }
   } catch (e) {
     await c.query('ROLLBACK').catch(() => {})
     throw e
@@ -358,50 +489,36 @@ export async function promoteMaturity({ memoryId, toMaturity, approvedBy, approv
   }
 }
 
-export async function demoteMaturity({ memoryId, toMaturity, approvedBy, approvedByName, reason, authorizedWriteScopes }) {
-  if (toMaturity !== 'draft') {
+export async function promoteMaturity(args) {
+  if (!['verified', 'proven'].includes(args.toMaturity)) {
+    throw new Error('toMaturity must be verified or proven')
+  }
+  const result = await changeMaturity({ ...args, direction: 'promote' })
+  if (result.canonical.written) {
+    defaultCanonicalOps.emitGitMirrorEvent({
+      id: `kos:promote:${result.canonical.file}`,
+      relPath: result.canonical.file,
+      scope: result.scope,
+      kosAction: 'updated',
+      authorAgentId: args.approvedBy || null,
+    })
+  }
+  return result
+}
+
+export async function demoteMaturity(args) {
+  if (args.toMaturity !== 'draft') {
     throw new Error('toMaturity must be draft')
   }
-  if (
-    !Array.isArray(authorizedWriteScopes) ||
-    authorizedWriteScopes.length === 0 ||
-    !authorizedWriteScopes.every(scope => typeof scope === 'string' && scope.length > 0)
-  ) {
-    throw new Error('authorizedWriteScopes must be a non-empty array of strings')
+  const result = await changeMaturity({ ...args, direction: 'demote' })
+  if (result.canonical.written) {
+    defaultCanonicalOps.emitGitMirrorEvent({
+      id: `kos:demote:${result.canonical.file}`,
+      relPath: result.canonical.file,
+      scope: result.scope,
+      kosAction: 'updated',
+      authorAgentId: args.approvedBy || null,
+    })
   }
-
-  const pool = (await import('./db.mjs')).getPool()
-  const c = await pool.connect()
-  try {
-    await c.query('BEGIN')
-    const cur = await c.query(
-      'SELECT maturity, scope FROM team_memory.memories WHERE id = $1 FOR UPDATE',
-      [memoryId]
-    )
-    if (!cur.rows.length) throw new Error('memory not found')
-    if (!authorizedWriteScopes.includes(cur.rows[0].scope)) {
-      throw new Error('memory scope is outside authorized write scopes')
-    }
-    const fromMaturity = cur.rows[0].maturity
-    if (!['verified', 'proven'].includes(fromMaturity)) {
-      throw new Error(`cannot demote ${fromMaturity} → ${toMaturity}`)
-    }
-
-    await c.query(
-      'UPDATE team_memory.memories SET maturity = $1 WHERE id = $2 AND scope = ANY($3)',
-      [toMaturity, memoryId, authorizedWriteScopes]
-    )
-    await c.query(
-      `INSERT INTO team_memory.promotion_log (memory_id, from_maturity, to_maturity, approved_by, approved_by_name, reason)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [memoryId, fromMaturity, toMaturity, approvedBy || null, approvedByName || null, reason || null]
-    )
-    await c.query('COMMIT')
-    return { id: memoryId, from: fromMaturity, to: toMaturity }
-  } catch (e) {
-    await c.query('ROLLBACK').catch(() => {})
-    throw e
-  } finally {
-    c.release()
-  }
+  return result
 }

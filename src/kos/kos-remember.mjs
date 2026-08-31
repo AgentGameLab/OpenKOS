@@ -219,7 +219,7 @@ function parseKnownShape(key, rest, blockLines) {
   return value
 }
 
-function parseFrontmatter(text) {
+export function parseFrontmatter(text) {
   text = text.replace(/\r\n/g, '\n') // CRLF 容错：归一化后再解析，否则 CRLF 文件 startsWith('---\n') 失败 → oldFm 空 → 更新时吐降级 frontmatter
   if (!text.startsWith('---\n')) return { fm: {}, body: text, comments: {}, orphanLines: [] }
   const end = text.indexOf('\n---\n', 4)
@@ -267,6 +267,39 @@ function parseFrontmatter(text) {
   }
   if (pendingComments.length) orphanLines.push(...pendingComments)
   return { fm, body, comments, orphanLines }
+}
+
+export function renderFrontmatter(fm, comments = {}, orphanLines = []) {
+  const HEAD_ORDER = [
+    'name', 'description', 'type', 'scope', 'tags', 'cues',
+    'created', 'written_by', 'id', 'supersedes',
+    'last_corrected_at', 'authoritative_sources',
+    'tier_review_reason',
+    'maturity', 'status',
+    'visibility', 'mode', 'output_type', 'dept_id',
+  ]
+  const orderedKeys = []
+  for (const k of HEAD_ORDER) {
+    if (fm[k] !== undefined) orderedKeys.push(k)
+  }
+  for (const k of Object.keys(fm)) {
+    if (!orderedKeys.includes(k) && fm[k] !== undefined) orderedKeys.push(k)
+  }
+
+  const fmLines = []
+  const emittedCommentKeys = new Set()
+  for (const k of orderedKeys) {
+    if (comments[k]) {
+      fmLines.push(...comments[k])
+      emittedCommentKeys.add(k)
+    }
+    fmLines.push(...serializeFmField(k, fm[k]))
+  }
+  for (const [k, commentLines] of Object.entries(comments)) {
+    if (!emittedCommentKeys.has(k)) fmLines.push(...commentLines)
+  }
+  fmLines.push(...orphanLines)
+  return '---\n' + fmLines.join('\n') + '\n---\n\n'
 }
 
 let tierPatternsCache = null
@@ -628,15 +661,25 @@ export async function remember({
   if (!exists) merged.written_by = { agent_id: agentId, session_id: sessionId, ts: now }
   merged.id = id
 
+  if (/[\/]team-memory[\/]rules[\/]/.test(filePath) && merged.frozen === undefined) {
+    merged.frozen = true
+    merged.frozen_since = now.slice(0, 10)
+    merged.frozen_unfreeze_by = ['founder-explicit-commit-with-unfreeze-tag']
+  }
+
   const tierReasonText = typeof tierReason === 'string' ? tierReason.trim() : ''
   if (allowTierReview && (!tierReasonText || tierReasonText.startsWith('--'))) {
     throw new Error('BLOCKED: --allow-tier-review 必须同时提供 --tier-reason "<why>"')
   }
   const tierScanText = `${content}\n${merged.name}\n${merged.description}`
   const tierMatches = findTierMatches(tierPatterns, tierScanText)
-  if (tierMatches.length && !allowTierReview) {
+  const isCoreScope = finalScope === 'team'
+  if (tierMatches.length && !allowTierReview && isCoreScope) {
+    merged.tier_review_reason = `auto-clear: scope=team(core) 读者面已在可信圈内，见 kos-write-tier-routing.md v3 §Core-in-core-scope（2026-08-22）`
+    console.error(`[kos_remember] ℹ️ Core/Restricted 命中但 scope=team(core) 已在可信圈内，自动放行：${tierMatches.map(p => p.label).join('、')}`)
+  } else if (tierMatches.length && !allowTierReview) {
     const matched = tierMatches.map(pattern => `${pattern.label} /${pattern.source}/${pattern.flags || ''}`).join('；')
-    throw new Error(`BLOCKED: 命中 Core/Restricted 分级词表：${matched}。敏感度先行——Core/Restricted 永不进 KOS`)
+    throw new Error(`BLOCKED: 命中 Core/Restricted 分级词表：${matched}。scope=${finalScope} 读者面超出可信圈——需 --allow-tier-review + --tier-reason 人工复核`)
   }
   if (allowTierReview) {
     merged.tier_review_reason = tierReasonText
@@ -684,36 +727,7 @@ export async function remember({
     }
   }
 
-  const HEAD_ORDER = [
-    'name', 'description', 'type', 'scope', 'tags', 'cues',
-    'created', 'written_by', 'id', 'supersedes',
-    'last_corrected_at', 'authoritative_sources',
-    'tier_review_reason',
-    'maturity', 'status',
-    'visibility', 'mode', 'output_type', 'dept_id',
-  ]
-  const orderedKeys = []
-  for (const k of HEAD_ORDER) {
-    if (merged[k] !== undefined) orderedKeys.push(k)
-  }
-  for (const k of Object.keys(merged)) {
-    if (!orderedKeys.includes(k) && merged[k] !== undefined) orderedKeys.push(k)
-  }
-
-  const fmLines = []
-  const emittedCommentKeys = new Set()
-  for (const k of orderedKeys) {
-    if (oldFmComments[k]) {
-      fmLines.push(...oldFmComments[k])
-      emittedCommentKeys.add(k)
-    }
-    fmLines.push(...serializeFmField(k, merged[k]))
-  }
-  for (const [k, commentLines] of Object.entries(oldFmComments)) {
-    if (!emittedCommentKeys.has(k)) fmLines.push(...commentLines)
-  }
-  fmLines.push(...oldOrphanLines)
-  const fmYaml = '---\n' + fmLines.join('\n') + '\n---\n\n'
+  const fmYaml = renderFrontmatter(merged, oldFmComments, oldOrphanLines)
   const body = fmYaml + content
 
   if (['rule', 'playbook'].includes(type) && isRepositoryScope(finalScope) && !draft && process.env.KOS_SENTINEL_GATE !== 'off') {
@@ -830,6 +844,15 @@ export async function remember({
   let kgRefresh = null
   if (isRepositoryScope(finalScope) && filePath.startsWith(ROOT)) {
     kgRefresh = scheduleKgRefresh(filePath)
+  }
+
+  if ((type === 'rule' || type === 'playbook') && (action === 'created' || action === 'updated')) {
+    console.error([
+      '[kos-remember] 📋 沉淀验收未完成：用「下次遇事时真正会说的话」实测召回（症状侧措辞：',
+      '  告警名字面量 / 日志·报错原文 / 「X 没生效 / 还在跑 / 杀不掉」类），≥3 条全部进 top3 才算写完。',
+      '  node scripts/kos/kos-recall.mjs --query "<症状词>" --limit 3',
+      '  自检 query 不能自己编——解法侧的话（「X 怎么做」）只有已知答案的人问得出来，测了等于没测。',
+    ].join('\n'))
   }
 
   return { id, location: filePath, status: action, scope: finalScope, kgRefresh, hint_candidates: hintCandidates, ...(cuesWarning ? { cues_warning: cuesWarning } : {}) }
@@ -1002,6 +1025,7 @@ if (isCli) {
       if (json.confirm_new !== undefined) json.confirmNew = json.confirm_new
       if (json.dedup_reason !== undefined) json.dedupReason = json.dedup_reason
       if (json.update_target !== undefined) json.updateTarget = json.update_target
+      if (json.last_verified !== undefined) json.lastVerified = json.last_verified  // 2026-08-24: snake_case 漏映射导致该字段被静默丢弃
       if (json.allow_tier_review !== undefined) json.allowTierReview = json.allow_tier_review
       if (json.tier_reason !== undefined) json.tierReason = json.tier_reason
       if (json.allow_shrink !== undefined) json.allowShrink = json.allow_shrink

@@ -24,10 +24,28 @@ function loadEnvFromFile(path) {
     }
   } catch {}
 }
-loadEnvFromFile(resolve(HOME, '.claude/.env.local'))
-const roster = loadRoster
+for (const p of [
+  process.env.TEAM_MEMORY_ENV_FILE,            // 显式指定，最高优先
+  resolve(HOME, '.claude/.env.local'),         // 通用位置（跨 owner 都该有）
+  process.env.AGENT_WORKSPACE_ENV,             // 各 owner 自己的 workspace env
+].filter(Boolean)) loadEnvFromFile(p)
+function rosterFromEnv() {
+  try {
+    const f = process.env.KOS_ROSTER || resolve(HOME, '.claude/kos-roster.json')
+    const r = JSON.parse(readFileSync(f, 'utf-8'))
+    const terms = Array.isArray(r.teamTerms) ? r.teamTerms.filter(x => typeof x === 'string' && x) : []
+    if (!terms.length) return null
+    const out = { teamTerms: terms }
+    if (r.roles && typeof r.roles.approver === 'string' && typeof r.roles.reviewer === 'string') out.roles = r.roles
+    return out
+  } catch { return null }
+}
+const rosterBase = loadRoster
   ? loadRoster()
   : { roles: { approver: 'the maintainer', reviewer: 'a reviewer' }, people: [], identityMap: {}, teamTerms: [] }
+const roster = rosterBase.teamTerms.filter(Boolean).length
+  ? rosterBase
+  : { ...rosterBase, ...(rosterFromEnv() || {}) }
 const configuredTeamTerms = roster.teamTerms.filter(Boolean)
 const teamTermPattern = configuredTeamTerms.length
   ? new RegExp(configuredTeamTerms.map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'))
@@ -63,6 +81,16 @@ const TRIGGER_PATTERNS = [
   /协议|playbook|ADR|decision|rule/i,
 
   /asi\.mjs|hq-send|town-inbox|send-as-xiaomeng|kg query|q-impact|q-feature|q-vector/i,
+
+  /推文|文章|写稿|出稿|长文|公众号|标题|草稿|文案/,
+  /spec|eval|评分卡|checklist|硬门/i,
+  /引流|传播|涨粉|蹭热点|发布|投放|social|小红书|知乎/i,
+
+  /怎么(算|做|设计|实现|定|选|评)/,
+  /(拆解|逆向|原型|竞品|案例|参考|对标)/,
+  /(方法论?|经验|教训|踩坑|复盘)/,
+  /(日报|扫描|雷达|动态)/,
+  /有没有|有什么|哪些/,
 ]
 
 function shouldTrigger(prompt) {
@@ -115,10 +143,16 @@ async function embedQuery(text) {
       }),
       signal: AbortSignal.timeout(2500),
     })
-    if (!r.ok) return null
+    if (!r.ok) {
+      logWarn(HOOK_NAME, 'embed_failed', { cause: 'http_' + r.status })
+      return null
+    }
     const j = await r.json()
     return j.data[0].embedding
-  } catch { return null }
+  } catch (e) {
+    logWarn(HOOK_NAME, 'embed_failed', { cause: e.name === 'TimeoutError' ? 'timeout' : 'fetch', err: String(e.message).slice(0, 120) })
+    return null
+  }
 }
 
 function emitBlindNotice(reason) {

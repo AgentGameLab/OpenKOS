@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import url from 'node:url'
 import { enforceContextBudget, startTrace } from './recall-guards.mjs'
+import { recordDraftRecall } from './lib/draft-ledger.mjs'
 import { findMatchingNodes, oneHopNeighbors as graphOneHopNeighbors } from '../kg/lib/graph-adjacency.mjs'
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url))
@@ -177,6 +178,7 @@ function teamDirsForType(type) {
     path.join(ROOT, 'team-memory', 'strategy'),
     path.join(ROOT, 'team-memory', 'eval'),
     path.join(ROOT, 'team-memory', 'state'),
+    path.join(ROOT, 'team-memory', 'ideas'),
   ]
 }
 
@@ -309,6 +311,7 @@ function inferType(filePath, fm) {
   if (rel.startsWith('team-memory/strategy/')) return 'strategy'
   if (rel.startsWith('team-memory/eval/')) return 'eval'
   if (rel.startsWith('team-memory/state/')) return 'state'
+  if (rel.startsWith('team-memory/ideas/')) return 'idea'
   return ''
 }
 
@@ -669,6 +672,7 @@ async function main() {
     let backend = 'tier1'
     let tier1Failed = false
     let tier2Failed = false
+    let tier2Unconfigured = false
 
     // 0) Tier-0 KG entity short-circuit（低命中数才接管，失败则静默回退）。
     const tier0 = tier0Recall(args)
@@ -702,7 +706,13 @@ async function main() {
           : mergeRankedResults([tier1Outcome.value, tier2Outcome.value], args.limit)
         backend = tier2Failed ? 'tier1' : (tier1Failed ? 'tier2' : 'tier1+tier2-parallel')
       } else {
-        // Service env 未配置时保持 Tier-1-only graceful degradation。
+        // Service env 未配置 → Tier-1-only。行为上是 graceful degradation，
+        // 但**观测形态跟下面 tier2Failed 那条完全一样**：有输出、看着像召回成功、团队库全不可见。
+        // 原来只有「配了但挂了」会告警，「压根没配」静默——而后者才是默认环境的常态，
+        // 于是 kos-remember 写完推荐跑的自检对一张从没进过 PG 的卡照样满分命中（2026-08-22 实测）。
+        // 护栏判据写在「失败」上没覆盖「未配置」= 门是对的但最常走的那条路够不着它。
+        tier2Unconfigured = true
+        backend = 'tier1-only-unconfigured'
         try {
           results = localRecall(args)
         } catch (error) {
@@ -717,12 +727,29 @@ async function main() {
       count: results.length,
       tier1Failed,
       tier2Failed,
+      tier2Unconfigured,
     })
 
     if (tier1Failed && tier2Failed) {
       console.error('[kos-recall] all backends failed')
       process.exitCode = 5
       return
+    }
+
+    // Tier-2 挂了但 Tier-1 还有结果 = 最危险的形态：有输出、看着像召回成功，实际只剩本地词面 grep，
+    // 团队库全部不可见。此前只落 trace（没人看），消费方（LLM agent）看不出降级 → 假绿。
+    // 典型触发：service token 缺失/过期/改名后没同步（KOS_SERVICE_TOKEN 迁移期）。
+    if (tier2Failed && !tier1Failed) {
+      console.error('[kos-recall] ⚠️ Tier-2(团队库) 失败，本次只有本地 Tier-1 词面结果 —— 别当完整召回。'
+        + ' 先查 KOS_SERVICE_TOKEN与 KOS_SERVICE_URL/TM_SERVICE_URL。')
+    }
+
+    // 未配置与「配了但挂了」观测上不可区分，同样不能当完整召回。
+    // 补救指向不同：那边是查凭据有没有失效，这边是压根没设。
+    if (tier2Unconfigured && !tier1Failed) {
+      console.error('[kos-recall] ⚠️ Tier-2(团队库) 未配置，本次只有本地 Tier-1 词面结果 —— 别当完整召回，'
+        + '尤其别拿它当「卡已进团队库」的验收：文件在本地就能满分命中。'
+        + ' 需要 KOS_SERVICE_URL/TM_SERVICE_URL + KOS_SERVICE_TOKEN（不是 TM_DATABASE_URL，直连 DB 那条路已退役）。')
     }
 
     // KOS-Plus v1 P0.3 Wave 1B: 1-hop typed neighbor enrichment (silent if KG missing)
@@ -734,6 +761,7 @@ async function main() {
     const budgeted = enforceContextBudget(contextEntries, guardConfig)
     const keptResults = results.slice(0, budgeted.kept.length)
     const validIds = recallIdSet(keptResults)
+    recordDraftRecall(keptResults, args.query)
     trace.step('context.filter', {
       inputEntries: contextEntries.length,
       keptEntries: budgeted.kept.length,

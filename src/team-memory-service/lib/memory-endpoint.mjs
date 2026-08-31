@@ -1,7 +1,6 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import url from 'node:url'
 import { remember as kosRemember, resolveAdrWritePath } from '../../kos/kos-remember.mjs'
 import { storeMemory } from './store.mjs'
 import { resolveWriteScopes } from './authz.mjs'
@@ -13,14 +12,12 @@ import {
   isLineScope,
   normalizeLegacyScope,
 } from './scopes.mjs'
+import { ROOT, isInsideRepo, emitGitMirrorEvent, loadCanonicalCard } from './canonical-card.mjs'
 
 const VALID_TYPES = ['rule', 'playbook', 'decision', 'feedback', 'reference', 'incident', 'correction']
 const MATURITY_RANK = { draft: 0, verified: 1, proven: 2 }
 const STATUS_RANK = { deprecated: 0, active: 1 }
 
-const __filename = url.fileURLToPath(import.meta.url)
-const __libdir = path.dirname(__filename)
-const ROOT = process.env.KOS_DATA_ROOT || path.resolve(__libdir, '..', '..', '..')
 
 const PERSONAL_MEMORY_DIR = process.env.KOS_PROJECT_MEMORY_DIR || path.join(process.cwd(), '.openkos', 'memory')
 
@@ -36,43 +33,6 @@ const TYPE_ROUTING = {
 
 const PG_ALLOWED_TYPES = ['snapshot', 'pointer', 'rule', 'playbook', 'decision', 'feedback', 'user', 'general', 'incident', 'reference', 'correction']
 
-const GIT_MIRROR_QUEUE = path.join(ROOT, '.asi', 'git-mirror-queue.jsonl')
-
-function isInsideRepo(relPath) {
-  if (!relPath || typeof relPath !== 'string') return false
-  const p = relPath.replace(/\\/g, '/')
-  if (path.isAbsolute(relPath)) return false
-  if (/^[a-zA-Z]:[/\\]/.test(relPath)) return false   // Windows 盘符
-  if (p.startsWith('//')) return false                 // UNC
-  if (p.startsWith('/')) return false                  // posix 绝对
-  const norm = path.posix.normalize(p)
-  return norm !== '..' && !norm.startsWith('../')
-}
-
-function emitGitMirrorEvent({ id, relPath, scope, kosAction, authorAgentId }) {
-  if (scope === 'personal') return // personal 不入仓
-
-  if (!isInsideRepo(relPath)) {
-    console.warn(`[/api/memory] git-mirror skip: 路径逃出仓 (${relPath}) — 个人记忆不入团队 mirror 队列`)
-    return
-  }
-
-  try {
-    const entry = {
-      ts: new Date().toISOString(),
-      id,
-      path: relPath,
-      scope,
-      kos_action: kosAction,
-      author_agent_id: authorAgentId || null,
-    }
-    const dir = path.dirname(GIT_MIRROR_QUEUE)
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-    fs.appendFileSync(GIT_MIRROR_QUEUE, JSON.stringify(entry) + '\n', 'utf-8')
-  } catch (err) {
-    console.warn(`[/api/memory] git-mirror queue emit failed (non-fatal): ${err.message}`)
-  }
-}
 
 export function transformInput(body) {
   if (!body || typeof body !== 'object') {
@@ -114,6 +74,21 @@ export function transformInput(body) {
   if (body.updateTarget !== undefined && typeof body.updateTarget !== 'string') {
     return { ok: false, error: 'updateTarget must be a string (repo-relative path or slug)', field: 'updateTarget' }
   }
+  const cueKeys = ['paths', 'tools', 'cmds', 'entities']
+  const cuesProvided = Object.hasOwn(body, 'cues')
+  if (cuesProvided) {
+    const cuesPrototype = body.cues === null || typeof body.cues !== 'object'
+      ? null
+      : Object.getPrototypeOf(body.cues)
+    if (body.cues === null || typeof body.cues !== 'object' || Array.isArray(body.cues) || (cuesPrototype !== Object.prototype && cuesPrototype !== null)) {
+      return { ok: false, error: 'cues must be a plain object', field: 'cues' }
+    }
+    for (const key of cueKeys) {
+      if (Object.hasOwn(body.cues, key) && (!Array.isArray(body.cues[key]) || body.cues[key].some(value => typeof value !== 'string' || value.trim().length === 0))) {
+        return { ok: false, error: `cues.${key} must be an array of non-empty strings`, field: `cues.${key}` }
+      }
+    }
+  }
   if (body.expiresAt !== undefined && body.expiresAt !== null) {
     if (typeof body.expiresAt !== 'string') {
       return { ok: false, error: 'expiresAt must be ISO 8601 datetime string or null', field: 'expiresAt' }
@@ -139,6 +114,12 @@ export function transformInput(body) {
   if (body.status !== undefined) out.status = body.status
   if (body.expiresAt !== undefined) out.expiresAt = body.expiresAt  // P1 ADR-032
   if (body.updateTarget !== undefined) out.updateTarget = body.updateTarget  // 2026-08-02 原位更新覆盖口
+  if (cuesProvided) {
+    out.cues = {}
+    for (const key of cueKeys) {
+      if (Object.hasOwn(body.cues, key)) out.cues[key] = body.cues[key]
+    }
+  }
   if (body.confirmNew !== undefined) out.confirmNew = body.confirmNew
   if (body.dedupReason !== undefined) out.dedupReason = body.dedupReason
   if (body.allowShrink !== undefined) out.allowShrink = body.allowShrink
@@ -212,6 +193,46 @@ export function detectMaturityConflict(input) {
 }
 
 
+export async function applyIndexMaturity({ id, requested, authAgent, kosFile }) {
+  if (!requested || !['draft', 'verified', 'proven'].includes(requested)) return { changed: false, skipped: 'no valid maturity' }
+
+  const cur = await query('SELECT maturity FROM team_memory.memories WHERE id = $1', [id])
+  const from = cur.rows[0]?.maturity ?? null
+  if (from === requested) return { changed: false, from, to: requested }
+
+  await query('UPDATE team_memory.memories SET maturity = $1 WHERE id = $2', [requested, id])
+
+  let writtenBy = null
+  try {
+    const card = kosFile ? loadCanonicalCard(kosFile) : null
+    if (card?.found) writtenBy = card.fm?.written_by?.agent_id || null
+  } catch { /* 记账不该拖垮写入 */ }
+
+  try {
+    await query(
+      `INSERT INTO team_memory.promotion_log (memory_id, from_maturity, to_maturity, approved_by, approved_by_name, reason, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        id,
+        from ?? 'draft',
+        requested,
+        authAgent?.agent_id || null,
+        authAgent?.agent_name || null,
+        `frontmatter 直写（index_only 通道）：.md 声明 ${requested}，索引跟随`,
+        JSON.stringify({
+          via: 'index_only',
+          canonical_file: kosFile || null,
+          frontmatter_written_by: writtenBy,
+          note: 'approved_by 是推送这条 sync 的 principal，不是标定档位的人',
+        }),
+      ]
+    )
+  } catch (err) {
+    console.warn(`[/api/memory] maturity 记账失败 id=${id} ${from}→${requested}: ${err.message}`)
+  }
+  return { changed: true, from, to: requested }
+}
+
 async function handleIndexOnlyWrite(rawBody, authAgent, t0) {
   if (!rawBody.content || typeof rawBody.content !== 'string' || rawBody.content.length === 0) {
     return { status: 400, body: { ok: false, error: 'content is required' } }
@@ -256,12 +277,33 @@ async function handleIndexOnlyWrite(rawBody, authAgent, t0) {
       source_file: normalizedKosFile,
     })
 
-    if (result.status !== 'duplicate') {
-      const maturity = rawBody.maturity
-      if (maturity && ['draft','verified','proven'].includes(maturity)) {
-        await query('UPDATE team_memory.memories SET maturity = $1 WHERE id = $2', [maturity, result.id])
+    if (result.status === 'duplicate' && normalizedKosFile !== null) {
+      try {
+        const existing = await query('SELECT source_file FROM team_memory.memories WHERE id = $1', [result.id])
+        if (!existing.rows[0]) {
+          console.warn(`[/api/memory] duplicate source_file 回填失败 id=${result.id} path=${normalizedKosFile}: row not found`)
+        } else if (existing.rows[0].source_file === null) {
+          const backfill = await query(
+            'UPDATE team_memory.memories SET source_file = $1 WHERE id = $2 AND source_file IS NULL',
+            [normalizedKosFile, result.id]
+          )
+          if (backfill.rowCount > 0) {
+            console.log(`[/api/memory] duplicate source_file 已回填 id=${result.id} path=${normalizedKosFile}`)
+          } else {
+            console.warn(`[/api/memory] duplicate source_file 回填失败 id=${result.id} path=${normalizedKosFile}: row changed before update`)
+          }
+        }
+      } catch (err) {
+        console.warn(`[/api/memory] duplicate source_file 回填失败 id=${result.id} path=${normalizedKosFile}: ${err.message}`)
       }
     }
+
+    await applyIndexMaturity({
+      id: result.id,
+      requested: rawBody.maturity,
+      authAgent,
+      kosFile: normalizedKosFile,
+    })
 
     return {
       status: 200,

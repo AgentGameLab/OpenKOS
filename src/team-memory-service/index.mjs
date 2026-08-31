@@ -7,7 +7,7 @@ import http from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
-import { hybridRecall, VISIBLE_STATUS_SQL } from './lib/recall.mjs'
+import { hybridRecall, listMemories, VISIBLE_STATUS_SQL } from './lib/recall.mjs'
 import { storeMemory, promoteMaturity, assertSupersedesWithinWriteScopes } from './lib/store.mjs'
 import { getPool, closePool, query } from './lib/db.mjs'
 import { authenticate, checkTokenTableAccess } from './lib/auth.mjs'
@@ -207,11 +207,12 @@ function createServer(authContext) {
 
   s.tool(
     'team_promote_maturity',
-    `提升 memory 的 maturity 等级（draft → verified 由 owner 显式 promote，2026-06-16 ADR-047 退役了自动 cron；verified → proven 必须 ${roster.roles.approver} ack）。手动调此工具 = ack 操作。⚠️ draft 不被 recall，写完必升 verified。`,
+    `提升 memory 的 maturity 等级（draft → verified 由 owner 显式 promote，2026-06-16 ADR-047 退役了自动 cron；verified → proven 必须 ${roster.roles.approver} ack）。手动调此工具 = ack 操作。⚠️ draft 能被 recall，但吃 +4 排名偏移 + ⚠️未实证 标记，top-k 里近乎沉底 —— 写完仍必升 verified。`,
     {
       memory_id: z.number().int().describe('memory id'),
       to_maturity: z.enum(['verified', 'proven']),
       reason: z.string().optional().describe('升降原因'),
+      allow_frozen: z.boolean().optional().describe('canonical 是 frozen 锚点且本次会改动它时，必须显式带 true（需 founder 解冻批准）'),
     },
     async (args) => {
       requirePermission(authContext, 'memory:promote')
@@ -223,8 +224,19 @@ function createServer(authContext) {
         approvedByName: authContext?.agent_name,
         reason: args.reason,
         authorizedWriteScopes: resolveWriteScopes(authContext),
+        allowFrozen: args.allow_frozen === true,
       })
-      return { content: [{ type: 'text', text: `✓ 升格 id=${r.id}: ${r.from} → ${r.to}` }] }
+      const lines = [`✓ 升格 id=${r.id}: ${r.from} → ${r.to}`]
+      if (r.canonical.file) {
+        lines.push(r.canonical.written
+          ? `· canonical ${r.canonical.file}: ${r.canonical.was || '(无)'} → ${r.to}（已入 git mirror 队列）`
+          : `· canonical ${r.canonical.file}: 已是 ${r.to}，本次只修 PG 索引`)
+      } else {
+        lines.push('· canonical: 该行无 source_file（PG 原生记忆），无文件可回写')
+      }
+      const alsoUpdated = r.updatedIds.filter(id => Number(id) !== Number(r.id))
+      if (alsoUpdated.length) lines.push(`· 同卡索引行一并同步: id ${alsoUpdated.join('/')}`)
+      return { content: [{ type: 'text', text: lines.join('\n') }] }
     }
   )
 
@@ -430,6 +442,33 @@ httpServer = http.createServer(async (req, res) => {
         }
         res.writeHead(result.status, headers)
         res.end(JSON.stringify(result.body))
+        return
+      }
+
+      if (path === '/api/memories' && req.method === 'GET') {
+        requirePermission(auth.agent, 'memory:read')
+        const rawScope = u.searchParams.get('scope')
+        const requestedScopes = rawScope
+          ? rawScope.split(',').map(s => s.trim()).filter(Boolean)
+          : undefined
+        const authorizedScopes = authorizeRequestedScopes(
+          auth.agent, requestedScopes, resolveDefaultScopes(auth.agent)
+        )
+        for (const key of ['after', 'limit']) {
+          const raw = u.searchParams.get(key)
+          if (raw !== null && !/^\d+$/.test(raw)) {
+            throw new RequestBodyError(400, `${key} 必须是非负整数，收到 ${raw}`)
+          }
+        }
+        const result = await listMemories({
+          scopeFilter: authorizedScopes,
+          after: u.searchParams.get('after') ?? 0,
+          limit: u.searchParams.get('limit') ?? 500,
+          includeExpired: u.searchParams.get('include_expired') === '1',
+          includeSuperseded: u.searchParams.get('include_superseded') === '1',
+        })
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ...result, scopes: authorizedScopes }))
         return
       }
 

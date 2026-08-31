@@ -20,7 +20,11 @@ function loadEnvFromFile(path) {
     }
   } catch {}
 }
-loadEnvFromFile(resolve(HOME, '.claude/.env.local'))
+for (const p of [
+  process.env.TEAM_MEMORY_ENV_FILE,            // 显式指定，最高优先
+  resolve(HOME, '.claude/.env.local'),         // 通用位置（跨 owner 都该有）
+  process.env.AGENT_WORKSPACE_ENV,             // 各 owner 自己的 workspace env
+].filter(Boolean)) loadEnvFromFile(p)
 
 const TM_SERVICE_URL = process.env.KOS_SERVICE_URL || process.env.TM_SERVICE_URL || 'http://127.0.0.1:3000'
 const EMBEDDING_API_BASE = process.env.EMBEDDING_API_BASE_URL || 'https://api.openai.com/v1'
@@ -41,9 +45,15 @@ async function embedQuery(text) {
       body: JSON.stringify({ model: EMBEDDING_MODEL, input: text, dimensions: EMBEDDING_DIM, encoding_format: 'float' }),
       signal: AbortSignal.timeout(2000),
     })
-    if (!r.ok) return null
+    if (!r.ok) {
+      logWarn(HOOK_NAME, 'embed_failed', { cause: 'http_' + r.status })
+      return null
+    }
     return (await r.json()).data[0].embedding
-  } catch { return null }
+  } catch (e) {
+    logWarn(HOOK_NAME, 'embed_failed', { cause: e.name === 'TimeoutError' ? 'timeout' : 'fetch', err: String(e.message).slice(0, 120) })
+    return null
+  }
 }
 
 const TEAM_TOOL_QUERY_HINTS = {

@@ -65,7 +65,7 @@ scripts/team-memory-service/
 | `team_recall_memory` | hybrid 召回（FTS + pgvector RRF 融合）；默认仅召 `proven`+`verified`，不带 draft 噪音 |
 | `team_store_memory` | 存入 team-memory；新写入强制 `maturity=draft`；`type=decision` 自动 `requires_review=true` |
 | `team_memory_stats` | 总数 / 按 type / 按 maturity / 近 24h recall 调用数 |
-| `team_promote_maturity` | 升 maturity（`draft → verified` 由 owner 显式 promote，ADR-047 已退役自动 cron；`verified → proven` 必须 approver ack）⚠️ draft 不被 recall，写完必升 |
+| `team_promote_maturity` | 升 maturity（`draft → verified` 由 owner 显式 promote，ADR-047 已退役自动 cron；`verified → proven` 必须 approver ack）⚠️ draft 可召回但 +4 偏移沉底 + ⚠️ 标记，写完仍必升 |
 | `team_update_recall_final_count` | hook 后置过滤完回写真注入数（区分 raw 候选池 vs final injected） |
 
 ---

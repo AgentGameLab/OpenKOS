@@ -46,6 +46,8 @@ const hooks = registerHooks({
         source: `
           export async function remember() { throw new Error('unexpected remember') }
           export function resolveAdrWritePath() { throw new Error('unexpected resolveAdrWritePath') }
+          export function parseFrontmatter() { throw new Error('unexpected parseFrontmatter') }
+          export function renderFrontmatter() { throw new Error('unexpected renderFrontmatter') }
         `,
       }
     }

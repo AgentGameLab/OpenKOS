@@ -120,6 +120,7 @@ export async function hybridRecall(opts = {}) {
     const ftsSql = `
       SELECT id, name, summary, content, type, topic, scope, status, maturity,
              confidence, importance, memory_level, category, tags, source_file,
+             metadata->>'kos_slug' AS kos_slug,
              created_at, t_valid,
              ts_rank(to_tsvector('simple', coalesce(content,'') || ' ' || coalesce(summary,'') || ' ' || coalesce(name,'')),
                      plainto_tsquery('simple', $${pIdx + 1})) AS fts_score
@@ -141,6 +142,7 @@ export async function hybridRecall(opts = {}) {
     const vecSql = `
       SELECT id, name, summary, content, type, topic, scope, status, maturity,
              confidence, importance, memory_level, category, tags, source_file,
+             metadata->>'kos_slug' AS kos_slug,
              created_at, t_valid,
              content_vector <=> $${pIdx + 1}::vector AS vec_dist
       FROM team_memory.memories
@@ -217,6 +219,11 @@ export async function hybridRecall(opts = {}) {
     category: m.row.category,
     tags: m.row.tags,
     source_file: m.row.source_file,
+    // 2026-08-22：canonical(.md) ↔ PG 对账要能把一行映射回具体文件。此前返回体既无 slug 也无
+    // 可靠身份，只能按 name 猜——而同名多行在库里是常态（实测同一张卡存在 2-3 行、id 各异），
+    // 按 name 匹配必然张冠李戴。source_file 才是 store.mjs cardKey 认的卡级身份，
+    // kos_slug 作为人可读的第二判据一并回传。
+    kos_slug: m.row.kos_slug ?? null,
     created_at: m.row.created_at,
     rrf_score: m.rrf,
     recall_sources: m.srcs,
@@ -264,6 +271,63 @@ export async function hybridRecall(opts = {}) {
   }
 
   return { hits, recall_log_id: recallLogId, duration_ms: durationMs, query_path: queryPath, rank_profile: rankProfile }
+}
+
+/**
+ * 身份清单枚举（对账专用，非召回）
+ *
+ * 为什么不复用 /api/recall：recall 是「按语义找 top-k」，结构上枚举不全，也不该为了对账
+ * 去骗它（构造空 query 拉全库会写脏 recall_log、刷 access_count、把审计读混进使用信号）。
+ * canonical(.md) ↔ PG 的 slug 级一致性需要的是**全量身份清单**，只要身份字段、不要正文。
+ *
+ * 刻意不返回 content/summary/向量：对账不需要正文，返回正文会让这个端点变成整库导出口。
+ * 可见性口径、scope 授权与 recall 完全一致（VISIBLE_STATUS_SQL 单一源），不新增可达面。
+ * 不写 recall_log、不动 access_count —— 对账是旁路观测，不能污染召回统计。
+ *
+ * @param {Object} opts
+ * @param {string[]} opts.scopeFilter 已授权 scope（authorizeRequestedScopes 的返回值）
+ * @param {number} [opts.after=0] id 游标（exclusive，按 id 升序翻页）
+ * @param {number} [opts.limit=500] 单页条数，硬上限 1000
+ * @param {boolean} [opts.includeExpired=false]
+ * @param {boolean} [opts.includeSuperseded=false]
+ * @returns {Promise<{ rows: Array, next_after: number|null, count: number }>}
+ */
+export async function listMemories(opts = {}) {
+  const {
+    scopeFilter,
+    after = 0,
+    includeExpired = false,
+    includeSuperseded = false,
+  } = opts
+  const limit = Math.min(Math.max(Number.parseInt(opts.limit ?? 500, 10) || 500, 1), 1000)
+  const cursor = Math.max(Number.parseInt(after, 10) || 0, 0)
+
+  if (!Array.isArray(scopeFilter) || scopeFilter.length === 0) {
+    throw new Error('scopeFilter must be a non-empty array of authorized scopes')
+  }
+
+  const whereParts = ['t_invalid IS NULL', 'id > $1', 'scope = ANY($2)']
+  if (!includeExpired) {
+    whereParts.push('(expires_at IS NULL OR expires_at > now())')
+    whereParts.push('expired_at IS NULL')
+  }
+  if (!includeSuperseded) whereParts.push(VISIBLE_STATUS_SQL)
+
+  const r = await query(
+    `SELECT id, name, type, scope, status, maturity, source_file,
+            metadata->>'kos_slug' AS kos_slug,
+            created_at, updated_at
+     FROM team_memory.memories
+     WHERE ${whereParts.join(' AND ')}
+     ORDER BY id
+     LIMIT $3`,
+    [cursor, scopeFilter, limit]
+  )
+
+  // next_after 只在满页时给：不满页说明已到尾，返回 null 让调用方停止翻页
+  // （给个非 null 值会让对账脚本多打一轮空请求，且分不清「到尾」和「被截断」）。
+  const nextAfter = r.rows.length === limit ? Number(r.rows[r.rows.length - 1].id) : null
+  return { rows: r.rows, next_after: nextAfter, count: r.rows.length }
 }
 
 /**

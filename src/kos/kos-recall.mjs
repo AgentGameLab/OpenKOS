@@ -25,7 +25,30 @@ const VALID_SCOPES = new Set(['team', 'personal', 'all'])
 const VALID_FORMATS = new Set(['json', 'text'])
 const DEFAULT_RECALL_MAX_CHARS = 8000
 const DEFAULT_RECALL_MAX_ENTRIES = 20
-const MATURITY_RANK_OFFSET = { proven: -2, verified: 0, draft: 4 }
+// Maturity is a tie-breaker, not a visibility suppressor; unlabeled entries follow draft.
+const DEFAULT_MATURITY_RANK_OFFSET = Object.freeze({ proven: -1, verified: 0, draft: 1 })
+
+function maturityRankOffsets() {
+  const raw = process.env.KOS_MATURITY_OFFSETS
+  if (!raw) return DEFAULT_MATURITY_RANK_OFFSET
+
+  try {
+    const parsed = JSON.parse(raw)
+    const valid = parsed && typeof parsed === 'object' && !Array.isArray(parsed) &&
+      Object.keys(DEFAULT_MATURITY_RANK_OFFSET).every(key => Number.isFinite(parsed[key]))
+    if (!valid) throw new TypeError('expected finite numeric proven, verified, and draft values')
+    return Object.freeze({
+      proven: parsed.proven,
+      verified: parsed.verified,
+      draft: parsed.draft,
+    })
+  } catch {
+    console.warn('[kos-recall] Ignoring invalid KOS_MATURITY_OFFSETS; using defaults.')
+    return DEFAULT_MATURITY_RANK_OFFSET
+  }
+}
+
+const MATURITY_RANK_OFFSET = maturityRankOffsets()
 
 function usage() {
   console.error('Usage: node scripts/kos/kos-recall.mjs --query "<phrase>" [--limit 5] [--type rule|playbook|decision|incident|all] [--scope team|personal|all] [--format json|text]')
@@ -648,7 +671,7 @@ function mergeRankedResults(tiers, limit) {
     .map(({ item }, index) => ({
       item,
       rank: index + 1,
-      effectiveRank: Math.max(1, index + 1 + (MATURITY_RANK_OFFSET[item.maturity] ?? 4)),
+      effectiveRank: Math.max(1, index + 1 + (MATURITY_RANK_OFFSET[item.maturity] ?? MATURITY_RANK_OFFSET.draft)),
     }))
     .sort((a, b) => a.effectiveRank - b.effectiveRank || a.rank - b.rank)
     .map(({ item }) => item)

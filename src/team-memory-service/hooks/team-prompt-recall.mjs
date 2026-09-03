@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { logTrace, logWarn } from './_lib/hook-log.mjs'
+import { cleanQuery, isSystemPrompt } from './_lib/query-clean.mjs'
 import { renderRecallHit, applyFreshSlot, isFreshHit, trimToBudget, capText } from './team-prompt-recall-format.mjs'
 
 let loadRoster = null
@@ -167,7 +168,7 @@ function emitBlindNotice(reason) {
 let input = ''
 process.stdin.setEncoding('utf-8')
 process.stdin.on('data', d => input += d)
-process.stdin.on('end', async () => {
+async function handleInput() {
   let payload = {}
   try { payload = JSON.parse(input || '{}') } catch { process.exit(0) }
 
@@ -175,14 +176,22 @@ process.stdin.on('end', async () => {
   const prompt = (payload.prompt || '').trim()
 
   if (!shouldTrigger(prompt)) process.exit(0)
+  if (isSystemPrompt(prompt)) {
+    logTrace(HOOK_NAME, 'skip_system_prompt', { sessionId })
+    process.exit(0)
+  }
+
+  const query = cleanQuery(prompt)
+  if (query.length < 4) {
+    logTrace(HOOK_NAME, 'empty_after_clean', { sessionId })
+    process.exit(0)
+  }
 
   const token = process.env.KOS_SERVICE_TOKEN
   if (!token) {
     logWarn(HOOK_NAME, 'no_token', { sessionId })
     process.exit(0)
   }
-
-  const query = prompt.slice(0, 500)
 
   const queryEmbedding = await embedQuery(query)
 
@@ -286,7 +295,7 @@ process.stdin.on('end', async () => {
   const finalEntries = [...keptRecall, ...(freshEntry ? [freshEntry] : [])]
   updateFinal(finalEntries.length)
 
-  let headerText = `🌐 [team memory] 你的问题跟 ${finalEntries.length} 条团队记忆重合（draft 仅作低位名称+来源提示${freshEntry ? '；🆕 为 fresh-slot 新沉淀保底槽' : ''}），优先按下方铁律/playbook/ADR 走，**避免漂移团队规范**：\n\n`
+  let headerText = `🌐 [team memory] 你的问题跟 ${finalEntries.length} 条团队记忆重合（draft 同样召回，⚠️ 表示未实证${freshEntry ? '；🆕 为 fresh-slot 新沉淀保底槽' : ''}），优先按下方铁律/playbook/ADR 走，**避免漂移团队规范**：\n\n`
   let footerText = `\n\n（⏱ ${recallData.duration_ms}ms ${recallData.query_path} · 通过 \`team_promote_maturity\` 升 proven 需 ${roster.roles.approver} ack；如果记忆过时请 store 新版 + supersedes 旧 id）`
   if (Array.from(headerText).length + Array.from(footerText).length > BUDGET_HINT_CHARS) {
     footerText = ''
@@ -319,4 +328,8 @@ process.stdin.on('end', async () => {
     },
   })
   process.exit(0)
+}
+
+process.stdin.on('end', () => {
+  handleInput().catch(() => process.exit(0))
 })

@@ -389,6 +389,7 @@ httpServer = http.createServer(async (req, res) => {
           includeExpired: body.include_expired === true,
           includeSuperseded: body.include_superseded === true,
           rankProfile,
+          explain: body.explain === true,
           logCtx: {
             source: body.source || 'rest',
             agentId: auth.agent.agent_id,

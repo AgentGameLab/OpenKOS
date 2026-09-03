@@ -4,6 +4,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { logTrace, logWarn } from './_lib/hook-log.mjs'
+import { cleanQuery } from './_lib/query-clean.mjs'
 
 const HOOK_NAME = 'team-tool-recall-pre'
 const HOME = process.env.USERPROFILE || process.env.HOME || ''
@@ -123,7 +124,7 @@ function emitRuleFireTelemetry(hits, triggerKeyword) {
 let input = ''
 process.stdin.setEncoding('utf-8')
 process.stdin.on('data', d => input += d)
-process.stdin.on('end', async () => {
+async function handleInput() {
   let payload = {}
   try { payload = JSON.parse(input || '{}') } catch { process.exit(0) }
 
@@ -148,7 +149,11 @@ process.stdin.on('end', async () => {
     process.exit(0)
   }
 
-  const queryText = TEAM_TOOL_QUERY_HINTS[toolName] || toolName
+  const hint = TEAM_TOOL_QUERY_HINTS[toolName] || toolName
+  const commandHead = cmd.slice(0, 160)
+  const queryText = commandHead
+    ? `${hint} ${cleanQuery(commandHead, { maxChars: 160 })}`
+    : hint
 
   const queryEmbedding = await embedQuery(queryText)
 
@@ -164,7 +169,7 @@ process.stdin.on('end', async () => {
         query: queryText,
         query_embedding: queryEmbedding,
         limit: 5,
-        min_importance: 6,
+        min_importance: 0,
         scope_filter: ['all-agents'],
         source: 'team-tool-recall-hook',
         session_id: sessionId,
@@ -242,4 +247,8 @@ process.stdin.on('end', async () => {
     writeFileSync(memoPath, JSON.stringify(memo))
   } catch {}
   process.exit(0)
+}
+
+process.stdin.on('end', () => {
+  handleInput().catch(() => process.exit(0))
 })

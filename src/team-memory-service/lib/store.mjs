@@ -2,6 +2,7 @@
 import { query } from './db.mjs'
 import { createHash } from 'node:crypto'
 import { AuthorizationError } from './authz.mjs'
+import { buildEmbedText, buildTokenText } from './text-prep.mjs'
 import {
   loadCanonicalCard,
   planCanonicalMaturity,
@@ -42,7 +43,7 @@ export const CARD_KEY_SQL = `CASE
   ELSE 'name:' || btrim(COALESCE(name, ''))
 END`
 
-async function embedContent(text) {
+export async function embedContent(text) {
   if (!text) return null
   const key = process.env.EMBEDDING_API_KEY
   if (!key) {
@@ -60,7 +61,7 @@ async function embedContent(text) {
       const r = await fetch(`${base}/embeddings`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, input: text.length > 4000 ? text.slice(0, 4000) : text, dimensions: dim, encoding_format: 'float' }),
+        body: JSON.stringify({ model, input: text, dimensions: dim, encoding_format: 'float' }),
       })
       if (!r.ok) {
         lastStatus = r.status
@@ -160,11 +161,19 @@ export async function storeMemory(mem) {
 
   const requires_review = type === 'decision'
 
+  const textFields = {
+    name: mem.name,
+    description: mem.description,
+    summary: mem.summary,
+    content,
+  }
+  const contentTokens = buildTokenText(textFields)
+
   let contentVector = null
   if (Array.isArray(mem.content_vector) && mem.content_vector.length === 1024) {
     contentVector = '[' + mem.content_vector.join(',') + ']'
   } else {
-    const vec = await embedContent([mem.name, content].filter(Boolean).join('\n'))
+    const vec = await embedContent(buildEmbedText(textFields))
     if (vec) contentVector = '[' + vec.join(',') + ']'
   }
 
@@ -213,7 +222,7 @@ export async function storeMemory(mem) {
 
     const ins = await c.query(
       `INSERT INTO team_memory.memories (
-        hash, name, description, content, summary,
+        hash, name, description, content, content_tokens, summary,
         type, topic, scope, status,
         maturity, requires_review,
         confidence, importance, memory_level, category,
@@ -223,15 +232,21 @@ export async function storeMemory(mem) {
         expires_at,
         source_file
       ) VALUES (
-        $1, $2, $3, $4, $5,
-        $6, $7, $8, 'active',
-        'draft', $9,
-        0.4, $10, $11, $12,
-        $13, $14,
-        $15, $16, $17::vector,
-        $18,
-        $19::timestamptz,
-        $20
+        $1, $2, $3, $4, $5, $6,
+        $7, $8, $9, 'active',
+        'draft', $10,
+        0.4, $11, $12, $13,
+        $14, $15,
+        $16,
+        COALESCE($17::jsonb, '{}'::jsonb)
+          || CASE WHEN $18::vector IS NOT NULL
+               THEN '{"embed_input_v":"2"}'::jsonb
+               ELSE '{}'::jsonb
+             END,
+        $18::vector,
+        $19,
+        $20::timestamptz,
+        $21
       )
       RETURNING id`,
       [
@@ -239,6 +254,7 @@ export async function storeMemory(mem) {
         mem.name || null,
         mem.description || null,
         content,
+        contentTokens,
         mem.summary || null,
         type,
         mem.topic || null,

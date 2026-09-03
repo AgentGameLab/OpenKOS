@@ -57,6 +57,16 @@ export function tokenizeZh(text) {
   return out.join(' ')
 }
 
+export function isDictWord(token) {
+  if (token == null) return false
+  const value = String(token)
+  const dict = loadDict()
+  if (dict.has(value)) return true
+  if (!/^[\x00-\x7F]+$/.test(value)) return false
+  const lowerValue = value.toLowerCase()
+  return [...dict].some(word => /^[\x00-\x7F]+$/.test(word) && word.toLowerCase() === lowerValue)
+}
+
 export function dictStats() {
   return { size: loadDict().size, path: DICT_PATH }
 }

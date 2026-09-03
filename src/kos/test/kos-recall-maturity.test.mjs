@@ -24,7 +24,7 @@ function runRecall(env) {
   })
 }
 
-test('Tier-1/Tier-2 fusion promotes proven and demotes draft by rank offset', async (t) => {
+test('Tier-1/Tier-2 fusion uses maturity as a tie-breaker and honors env overrides', async (t) => {
   const dataRoot = await mkdtemp(path.join(os.tmpdir(), 'kos-recall-maturity-'))
   t.after(() => rm(dataRoot, { recursive: true, force: true }))
 
@@ -43,14 +43,31 @@ test('Tier-1/Tier-2 fusion promotes proven and demotes draft by rank offset', as
   t.after(() => new Promise((resolve) => server.close(resolve)))
   const { port } = server.address()
 
-  const result = await runRecall({
+  const baseEnv = {
     ...process.env,
     KOS_DATA_ROOT: dataRoot,
     KOS_SERVICE_URL: `http://127.0.0.1:${port}`,
     KOS_SERVICE_TOKEN: 'test-token',
     KOS_RECALL_TRACE_DIR: path.join(dataRoot, 'traces'),
-  })
+  }
+  delete baseEnv.KOS_MATURITY_OFFSETS
+
+  const result = await runRecall(baseEnv)
 
   assert.equal(result.code, 0, result.stderr)
-  assert.deepEqual(JSON.parse(result.stdout).map((hit) => hit.id), ['proven', 'verified', 'draft'])
+  assert.deepEqual(JSON.parse(result.stdout).map((hit) => hit.id), ['draft', 'verified', 'proven'])
+
+  const overridden = await runRecall({
+    ...baseEnv,
+    KOS_MATURITY_OFFSETS: '{"proven":-2,"verified":0,"draft":4}',
+  })
+  assert.equal(overridden.code, 0, overridden.stderr)
+  assert.deepEqual(JSON.parse(overridden.stdout).map((hit) => hit.id), ['proven', 'verified', 'draft'])
+
+  for (const invalidValue of ['not-json', '{"proven":-1,"verified":0,"draft":"1"}']) {
+    const invalid = await runRecall({ ...baseEnv, KOS_MATURITY_OFFSETS: invalidValue })
+    assert.equal(invalid.code, 0, invalid.stderr)
+    assert.deepEqual(JSON.parse(invalid.stdout).map((hit) => hit.id), ['draft', 'verified', 'proven'])
+    assert.equal(invalid.stderr.match(/Ignoring invalid KOS_MATURITY_OFFSETS/g)?.length, 1)
+  }
 })

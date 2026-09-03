@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
 import { hybridRecall, listMemories, VISIBLE_STATUS_SQL } from './lib/recall.mjs'
-import { storeMemory, promoteMaturity, assertSupersedesWithinWriteScopes } from './lib/store.mjs'
+import { storeMemory, promoteMaturity, assertSupersedesWithinWriteScopes, retireBySourceFiles } from './lib/store.mjs'
 import { getPool, closePool, query } from './lib/db.mjs'
 import { authenticate, checkTokenTableAccess } from './lib/auth.mjs'
 import {
@@ -404,6 +404,26 @@ httpServer = http.createServer(async (req, res) => {
         })
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(result))
+        return
+      }
+
+      if (path === '/api/memory/retire' && req.method === 'POST') {
+        const body = await readJsonBody(req)
+        requirePermission(auth.agent, 'memory:write')
+        if (!Array.isArray(body.source_files) || body.source_files.length === 0) {
+          throw new RequestBodyError(400, 'source_files 必须是非空数组')
+        }
+        if (body.source_files.length > 500) {
+          throw new RequestBodyError(400, 'source_files 单次最多 500 条')
+        }
+        const result = await retireBySourceFiles({
+          sourceFiles: body.source_files,
+          reason: body.reason,
+          authorizedWriteScopes: resolveWriteScopes(auth.agent),
+          authorAgentId: auth.agent.agent_id,
+        })
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, ...result }))
         return
       }
 

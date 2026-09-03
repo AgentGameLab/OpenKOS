@@ -505,6 +505,33 @@ async function changeMaturity({
   }
 }
 
+export async function retireBySourceFiles({ sourceFiles, reason, authorizedWriteScopes, authorAgentId }) {
+  const files = [...new Set((Array.isArray(sourceFiles) ? sourceFiles : [])
+    .map(s => String(s || '').trim()).filter(Boolean))]
+  if (files.length === 0) throw new Error('source_files must be a non-empty array')
+  if (files.length > 500) throw new Error('source_files must contain at most 500 paths')
+  const scopes = (Array.isArray(authorizedWriteScopes) ? authorizedWriteScopes : []).filter(Boolean)
+  if (scopes.length === 0) throw new AuthorizationError('无写入 scope，不能 retire')
+  const meta = {
+    retired_reason: String(reason || '').slice(0, 300),
+    retired_by: authorAgentId || null,
+    retired_at: new Date().toISOString(),
+  }
+  const res = await query(
+    `UPDATE team_memory.memories
+        SET t_invalid = now(), status = 'superseded', updated_at = now(),
+            metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb
+      WHERE source_file = ANY($1) AND scope = ANY($2) AND t_invalid IS NULL
+      RETURNING id, source_file`,
+    [files, scopes, JSON.stringify(meta)]
+  )
+  return {
+    retired: res.rowCount ?? 0,
+    ids: res.rows.map(r => Number(r.id)),
+    source_files: [...new Set(res.rows.map(r => r.source_file))],
+  }
+}
+
 export async function promoteMaturity(args) {
   if (!['verified', 'proven'].includes(args.toMaturity)) {
     throw new Error('toMaturity must be verified or proven')
